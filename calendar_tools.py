@@ -133,7 +133,6 @@ def create_event(
         }
 
     }
-
     created = calendar_service.events().insert(
         calendarId="primary",
         body=event

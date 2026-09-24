@@ -1,0 +1,1 @@
+"""Telegram AI clinic assistant application."""
