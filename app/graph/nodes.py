@@ -6,6 +6,7 @@ from ..rag.service import RagService
 from ..tools.invoice import InvoiceData
 from ..tools.invoices import InvoiceTools
 from ..tools.patients import PatientRecord
+from ..tools.date_utils import parse_date
 from ..tools.rag_tool import search_clinic_knowledge
 from .state import GraphState
 import logging
@@ -93,13 +94,17 @@ class GraphNodes:
         if step == "date":
             if not self._slots or not state.get("doctor_name"):
                 return {**state, "response": "Appointment slots are not configured yet. Please contact the clinic team at " + self._support_phone + "."}
-            available_result = self._slots.get_available_slots(state["doctor_name"], text)
+            date_result = parse_date(text)
+            if not date_result["success"]:
+                return {**state, "response": date_result["message"]}
+            normalized_date = date_result["date"]
+            available_result = self._slots.get_available_slots(state["doctor_name"], normalized_date)
             if isinstance(available_result, dict) and not available_result.get("success"):
                 return {**state, "response": "I couldn't check availability right now. Please try again or contact clinic support at " + self._support_phone + "."}
             available = available_result.get("slots", []) if isinstance(available_result, dict) else available_result
             if not available:
                 return {**state, "response": "No available slots were found for that date. Please choose another date."}
-            return {**state, "appointment_date": text, "available_slots": available, "appointment_step": "slot", "ui": "slots", "response": "Please select an available slot."}
+            return {**state, "appointment_date": normalized_date, "available_slots": available, "appointment_step": "slot", "ui": "slots", "response": "Please select an available slot."}
         if step == "slot":
             slot_id = text.removeprefix("slot:")
             slot = next((item for item in state.get("available_slots", []) if item.get("Slot ID") == slot_id), None)
@@ -157,7 +162,10 @@ class GraphNodes:
                 self._slots.release_slot_if_needed(state.get("slot_id", ""), state.get("patient_id"))
             return {**state, "response": "I couldn't complete the booking right now. Please try again or contact clinic support at " + self._support_phone + "."}
         try:
-            invoice_data = InvoiceData(self._clinic_name, self._support_phone, "", "", record.name, record.email, record.phone, state["doctor_name"], state.get("specialization", ""), state["appointment_date"], state["appointment_time"], token_no, state["amount"], "Pay at Clinic", "Pending")
+            qr_result = self._payments.generate_offline_upi_qr(state["amount"], self._clinic_name, token_no, Path("data/invoices")) if self._payments else {"success": False, "error_code": "QR_TOOL_UNAVAILABLE"}
+            if not qr_result.get("success"):
+                raise RuntimeError("Offline payment QR generation failed")
+            invoice_data = InvoiceData(self._clinic_name, self._support_phone, "", "", record.name, record.email, record.phone, state["doctor_name"], state.get("specialization", ""), state["appointment_date"], state["appointment_time"], token_no, state["amount"], "Pay at Clinic / UPI", "Pending", qr_result["qr_path"])
             invoice_result = self._invoices.generate_invoice(invoice_data, Path("data/invoices"))
             if not invoice_result.get("success"):
                 raise RuntimeError("Invoice generation failed")

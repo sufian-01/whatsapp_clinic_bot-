@@ -68,4 +68,6 @@ def _reply_markup(result):
         return confirmation_menu()
     if result.get("ui") == "payment":
         return payment_menu()
+    if result.get("appointment_step") and result.get("appointment_step") != "complete":
+        return None
     return main_menu()
