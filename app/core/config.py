@@ -22,6 +22,11 @@ class Settings:
     knowledge_dir: Path
     vectorstore_dir: Path
     webhook_path: str = "/webhook/telegram"
+    support_phone: str = "6200126662"
+    clinic_sheet_id: str = ""
+    clinic_sheet_range: str = "Sheet1!A1:Z1000"
+    patient_sheet_range: str = "patient!A1:Z1000"
+    appointment_slot_sheet_range: str = "appointment_slots!A1:Z5000"
 
 
 def get_settings() -> Settings:
@@ -34,6 +39,11 @@ def get_settings() -> Settings:
         telegram_webhook_url=os.getenv("TELEGRAM_WEBHOOK_URL", ""),
         knowledge_dir=ROOT_DIR / "data" / "knowledge",
         vectorstore_dir=ROOT_DIR / "data" / "vectorstore",
+        support_phone=os.getenv("CLINIC_SUPPORT_PHONE", "6200126662"),
+        clinic_sheet_id=os.getenv("CLINIC_SHEET_ID", ""),
+        clinic_sheet_range=os.getenv("CLINIC_SHEET_RANGE", "Sheet1!A1:Z1000"),
+        patient_sheet_range=os.getenv("PATIENT_SHEET_RANGE", "patient!A1:Z1000"),
+        appointment_slot_sheet_range=os.getenv("APPOINTMENT_SLOT_SHEET_RANGE", "appointment_slots!A1:Z5000"),
     )
 
 

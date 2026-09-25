@@ -2,6 +2,10 @@ from langchain_core.tools import tool
 
 from googleapiclient.discovery import build
 import base64
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
 from google_auth import get_credentials
 creds = get_credentials()
 
@@ -50,6 +54,28 @@ Subject: {subject}
             "raw": raw
         }
     ).execute()
+    return "Email sent successfully."
+
+
+@tool
+def send_email_with_attachment(
+    to: str,
+    subject: str,
+    body: str,
+    attachment_path: str,
+) -> str:
+    """Send an email with one local PDF attachment."""
+    message = MIMEMultipart()
+    message["To"] = to
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain", "utf-8"))
+    path = Path(attachment_path)
+    with path.open("rb") as attachment:
+        part = MIMEApplication(attachment.read(), _subtype="pdf")
+    part.add_header("Content-Disposition", "attachment", filename=path.name)
+    message.attach(part)
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    gmail_service.users().messages().send(userId="me", body={"raw": raw}).execute()
     return "Email sent successfully."
 
 #Read Latest Emails

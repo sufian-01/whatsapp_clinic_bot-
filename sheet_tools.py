@@ -59,7 +59,8 @@ def read_sheet(
 @tool
 def append_row(
     spreadsheet_id: str,
-    values: List[str]
+    values: List[str],
+    range_name: str = "Sheet1!A1"
 ):
     """
     Append one row.
@@ -75,7 +76,7 @@ def append_row(
 
     sheet_service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        range="Sheet1!A1",
+        range=range_name,
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body=body
