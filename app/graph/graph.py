@@ -11,6 +11,7 @@ def build_graph(nodes: GraphNodes):
     graph.add_node("classify_intent", nodes.classify)
     graph.add_node("retrieve", nodes.retrieve)
     graph.add_node("doctor_lookup", nodes.doctor_lookup)
+    graph.add_node("doctor_list", nodes.doctor_list_node)   # NEW: deterministic doctor list
     graph.add_node("appointment_start", nodes.appointment_start)
     graph.add_node("appointment_progress", nodes.appointment_progress)
     graph.add_node("report_response", nodes.report_response)
@@ -20,6 +21,7 @@ def build_graph(nodes: GraphNodes):
     graph.add_conditional_edges("classify_intent", lambda state: state["intent"], {
         "clinic_information": "retrieve",
         "doctor_information": "doctor_lookup",
+        "doctor_list": "doctor_list",              # NEW
         "appointment_booking": "appointment_start",
         "appointment_flow": "appointment_progress",
         "report_enquiry": "report_response",
@@ -28,6 +30,7 @@ def build_graph(nodes: GraphNodes):
     })
     graph.add_edge("retrieve", "answer")
     graph.add_edge("doctor_lookup", "answer")
+    graph.add_edge("doctor_list", END)              # no LLM pass-through needed
     graph.add_edge("appointment_start", END)
     graph.add_edge("appointment_progress", END)
     graph.add_edge("report_response", END)

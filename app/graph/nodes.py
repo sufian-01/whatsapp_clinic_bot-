@@ -1,23 +1,48 @@
-"""Pure graph nodes with injected collaborators."""
+from __future__ import annotations
 
+import logging
+from pathlib import Path
+
+from typing import TYPE_CHECKING
 from ..core.prompts import load_system_prompt
-from ..llm.gemini import GeminiClient
-from ..rag.service import RagService
+
+if TYPE_CHECKING:
+    from ..llm.gemini import GeminiClient
+    from ..rag.service import RagService
+from ..tools.date_utils import parse_date, parse_date_from_text
+from ..tools.doctors import (
+    format_doctor_list_display,
+    match_health_concern,
+    resolve_specialization,
+)
 from ..tools.invoice import InvoiceData
 from ..tools.invoices import InvoiceTools
 from ..tools.patients import PatientRecord
-from ..tools.date_utils import parse_date
 from ..tools.rag_tool import search_clinic_knowledge
 from .state import GraphState
-import logging
-from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
 
+# Maximum doctors to show as Telegram inline buttons (beyond this limit we use text)
+_MAX_BUTTON_DOCTORS = 8
+
 
 class GraphNodes:
-    def __init__(self, clinic_name: str, llm: GeminiClient, rag: RagService, doctors=None, support_phone: str = "6200126662", patients=None, slots=None, email_sender=None, payments=None, invoices=None, gmail=None) -> None:
+    def __init__(
+        self,
+        clinic_name: str,
+        llm: GeminiClient,
+        rag: RagService,
+        doctors=None,
+        support_phone: str = "6200126662",
+        patients=None,
+        slots=None,
+        email_sender=None,
+        payments=None,
+        invoices=None,
+        gmail=None,
+    ) -> None:
         self._clinic_name = clinic_name
         self._llm = llm
         self._rag = rag
@@ -29,16 +54,27 @@ class GraphNodes:
         self._invoices = invoices or InvoiceTools()
         self._gmail = gmail
 
+    # ------------------------------------------------------------------
+    # classify
+    # ------------------------------------------------------------------
+
     def classify(self, state: GraphState) -> GraphState:
         from .router import classify_intent
-
         return classify_intent(state)
+
+    # ------------------------------------------------------------------
+    # retrieve  (RAG)
+    # ------------------------------------------------------------------
 
     def retrieve(self, state: GraphState) -> GraphState:
         logger.info("RAG tool invoked")
         context = search_clinic_knowledge(self._rag, state.get("user_text", ""))
         logger.info("Retrieved %d chunks", len(context))
         return {**state, "clinic_context": context}
+
+    # ------------------------------------------------------------------
+    # doctor_lookup  (for doctor_information intent)
+    # ------------------------------------------------------------------
 
     def doctor_lookup(self, state: GraphState) -> GraphState:
         if self._doctors is None:
@@ -56,55 +92,136 @@ class GraphNodes:
                 break
         return {**state, "doctor_context": matches}
 
+    # ------------------------------------------------------------------
+    # doctor_list_node  (deterministic doctor discovery, listing & concern matching)
+    # ------------------------------------------------------------------
+
+    def doctor_list_node(self, state: GraphState) -> GraphState:
+        """Show available doctors or matching specialists without starting appointment flow.
+
+        - If user provided a date -> filter by slot availability (deterministic).
+        - If user described a health concern/symptom -> match concern to specialization.
+        - If user provided a specialization keyword -> filter by specialization.
+        - Otherwise show all active doctors from the Google Sheet.
+
+        Zero LLM calls made here to minimize token usage.
+        """
+        if self._doctors is None:
+            return {**state, "response": "Doctor information is not available right now. Please contact the clinic team at " + self._support_phone + "."}
+
+        text = state.get("user_text", "")
+
+        # 1. Try to extract a date from user text (deterministic)
+        date_result = parse_date_from_text(text)
+        target_date: str | None = date_result["date"] if date_result.get("success") else None
+
+        if target_date and self._slots:
+            doctors = self._doctors.get_available_doctors_for_date(target_date, self._slots)
+            if not doctors:
+                return {**state, "response": f"No doctors have available slots on {date_result['display_date']}. Please try another date or contact the clinic at {self._support_phone}."}
+            intro = f"Doctors available on {date_result['display_date']}:"
+            response = format_doctor_list_display(doctors, intro=intro)
+            return {
+                **state,
+                "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
+                "ui": "doctor_select",
+                "response": response,
+            }
+
+        # 2. Try to match health concern/symptom keywords (deterministic)
+        concern_phrase, concern_spec = match_health_concern(text)
+        if concern_spec:
+            spec_doctors = self._doctors.get_doctors_by_specialization(concern_spec)
+            if spec_doctors:
+                spec_name = spec_doctors[0].get("Specialization", concern_spec.title())
+                intro = f"For health concerns related to {concern_phrase}, you may consult our {spec_name} specialist(s):"
+                response = (
+                    format_doctor_list_display(spec_doctors, intro=intro)
+                    + "\n\n*(Note: This recommendation is informational based on our clinic specialties and not medical advice. Please consult our doctors for proper evaluation.)*"
+                )
+                return {
+                    **state,
+                    "doctor_choices": spec_doctors[:_MAX_BUTTON_DOCTORS],
+                    "ui": "doctor_select",
+                    "response": response,
+                }
+            else:
+                all_active = self._doctors.get_active_doctors()
+                intro = f"We do not currently have a specialist available for {concern_phrase}.\n\nOur available doctors are:"
+                response = (
+                    format_doctor_list_display(all_active, intro=intro)
+                    + "\n\n*(Note: This is informational based on our clinic specialties and not medical advice.)*"
+                )
+                return {
+                    **state,
+                    "doctor_choices": all_active[:_MAX_BUTTON_DOCTORS],
+                    "ui": "doctor_select",
+                    "response": response,
+                }
+
+        # 3. Try to extract direct specialization from user text (deterministic)
+        spec_canonical = resolve_specialization(text)
+        if spec_canonical:
+            doctors = self._doctors.get_doctors_by_specialization(spec_canonical)
+            if doctors:
+                spec_name = doctors[0].get("Specialization", spec_canonical.title())
+                intro = f"Our available {spec_name} specialist(s):"
+                response = format_doctor_list_display(doctors, intro=intro)
+                return {
+                    **state,
+                    "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
+                    "ui": "doctor_select",
+                    "response": response,
+                }
+
+        # 4. General doctor listing query (deterministic)
+        doctors = self._doctors.get_active_doctors()
+        if not doctors:
+            return {**state, "response": "No doctors are currently available. Please contact the clinic team at " + self._support_phone + "."}
+
+        response = format_doctor_list_display(doctors)
+        return {
+            **state,
+            "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
+            "ui": "doctor_select",
+            "response": response,
+        }
+
+    # ------------------------------------------------------------------
+    # appointment_start
+    # ------------------------------------------------------------------
+
     def appointment_start(self, state: GraphState) -> GraphState:
         return {**state, "appointment_step": "name", "response": "Sure. May I know your name?"}
 
-    def appointment_progress(self, state: GraphState) -> GraphState:
+    # ------------------------------------------------------------------
+    # appointment_progress
+    # ------------------------------------------------------------------
+
+    def appointment_progress(self, state: GraphState) -> GraphState:  # noqa: C901
         step = state.get("appointment_step", "name")
         text = state.get("user_text", "").strip()
+
         if step == "name":
             return {**state, "patient_name": text, "appointment_step": "email", "response": "What email address should receive the invoice?"}
+
         if step == "email":
             if "@" not in text or "." not in text:
                 return {**state, "response": "Please provide a valid email address."}
             return {**state, "patient_email": text, "appointment_step": "phone", "response": "What phone number should we use?"}
+
         if step == "phone":
-            return {**state, "patient_phone": text, "appointment_step": "doctor", "response": "Which doctor or specialization would you like?"}
+            return {**state, "patient_phone": text, "appointment_step": "doctor", **self._show_doctor_selection(state)}
+
         if step == "doctor":
-            if self._doctors is None:
-                return {**state, "response": "Doctor information is unavailable right now. Please contact the clinic team at " + self._support_phone + "."}
-            matches = self._doctors.get_doctors()
-            lowered = text.casefold()
-            named = [doctor for doctor in matches if doctor.get("Doctor Name", "").casefold() in lowered]
-            specialization = next((value for value in ("gynecologist", "physician", "specialist") if value in lowered), "")
-            if named:
-                matches = named
-            elif specialization:
-                matches = self._doctors.get_doctors_by_specialization(specialization)
-            else:
-                matches = []
-            if len(matches) != 1:
-                options = "\n".join(f"{doctor.get('Doctor Name', 'Unknown')} - {doctor.get('Specialization', 'Unknown')}" for doctor in matches)
-                return {**state, "doctor_context": matches, "response": options or "I couldn't find that doctor. Please provide a doctor name or specialization."}
-            doctor = matches[0]
-            amount = doctor.get("Consultation Fee", "")
-            if not amount:
-                return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
-            return {**state, "doctor_context": matches, "doctor_id": doctor.get("Doctor ID", ""), "doctor_name": doctor.get("Doctor Name", ""), "specialization": doctor.get("Specialization", ""), "amount": amount, "appointment_step": "date", "response": "What date would you prefer? Please use YYYY-MM-DD."}
+            return self._handle_doctor_step(state, text)
+
+        if step == "doctor_confirm_fuzzy":
+            return self._handle_fuzzy_confirmation(state, text)
+
         if step == "date":
-            if not self._slots or not state.get("doctor_name"):
-                return {**state, "response": "Appointment slots are not configured yet. Please contact the clinic team at " + self._support_phone + "."}
-            date_result = parse_date(text)
-            if not date_result["success"]:
-                return {**state, "response": date_result["message"]}
-            normalized_date = date_result["date"]
-            available_result = self._slots.get_available_slots(state["doctor_name"], normalized_date)
-            if isinstance(available_result, dict) and not available_result.get("success"):
-                return {**state, "response": "I couldn't check availability right now. Please try again or contact clinic support at " + self._support_phone + "."}
-            available = available_result.get("slots", []) if isinstance(available_result, dict) else available_result
-            if not available:
-                return {**state, "response": "No available slots were found for that date. Please choose another date."}
-            return {**state, "appointment_date": normalized_date, "available_slots": available, "appointment_step": "slot", "ui": "slots", "response": "Please select an available slot."}
+            return self._handle_date_step(state, text)
+
         if step == "slot":
             slot_id = text.removeprefix("slot:")
             slot = next((item for item in state.get("available_slots", []) if item.get("Slot ID") == slot_id), None)
@@ -112,9 +229,10 @@ class GraphNodes:
                 return {**state, "response": "That slot is no longer available. Please select another slot."}
             summary = self._summary(state, slot.get("Start Time", ""))
             return {**state, "slot_id": slot_id, "appointment_time": slot.get("Start Time", ""), "appointment_step": "confirmation", "ui": "confirm", "response": summary + "\n\nPlease confirm your appointment."}
+
         if step == "confirmation":
             if text.casefold() in {"change", "no", "cancel"}:
-                return {**state, "appointment_step": "doctor", "ui": "", "response": "What doctor or specialization would you like instead?"}
+                return {**state, "appointment_step": "doctor", "ui": "", **self._show_doctor_selection(state)}
             if text.casefold() not in {"confirm", "yes", "book it"}:
                 return {**state, "response": "Please select Confirm or Change."}
             if not self._slots or not self._patients:
@@ -130,6 +248,7 @@ class GraphNodes:
             if not booked:
                 return {**state, "response": "That slot was just booked by someone else. Please choose another slot."}
             return {**state, "patient_id": patient_id, "token_no": token_no, "appointment_step": "payment", "ui": "payment", "response": "Your slot is reserved. Please choose a payment method."}
+
         if step == "payment":
             if text.casefold() in {"online", "payment_online"}:
                 payment = self._payments.create_online_payment(state.get("amount", "")) if self._payments else {"success": False, "status": "NOT_IMPLEMENTED", "message": "Online payment will be available soon."}
@@ -139,7 +258,165 @@ class GraphNodes:
             if text.casefold() not in {"offline", "payment_offline"}:
                 return {**state, "response": "Please choose Online Payment or Offline Payment."}
             return self._complete_offline(state)
+
         return {**state, "response": "Please continue with the appointment details."}
+
+    # ------------------------------------------------------------------
+    # Internal helpers — doctor selection
+    # ------------------------------------------------------------------
+
+    def _show_doctor_selection(self, state: GraphState) -> dict:
+        """Return state fragment displaying available doctors in structured format with buttons."""
+        if self._doctors is None:
+            return {"response": "Doctor information is unavailable right now. Please contact the clinic team at " + self._support_phone + "."}
+        doctors = self._doctors.get_active_doctors()
+        if not doctors:
+            return {"response": "No doctors are available right now. Please contact the clinic team at " + self._support_phone + "."}
+        response = format_doctor_list_display(doctors)
+        return {
+            "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
+            "ui": "doctor_select",
+            "response": response,
+        }
+
+    def _handle_doctor_step(self, state: GraphState, text: str) -> GraphState:
+        """Process user input during the 'doctor' appointment step.
+
+        Order of checks (all deterministic, zero LLM calls):
+        1. Doctor ID callback (button click)
+        2. Fuzzy name matching (handling typos, incomplete names, prefixes, extra words)
+        3. Specialization keyword matching
+        4. Health concern matching
+        5. Ambiguous or unknown -> show matching or full doctor list
+        """
+        if self._doctors is None:
+            return {**state, "response": "Doctor information is unavailable right now. Please contact the clinic team at " + self._support_phone + "."}
+
+        all_active = self._doctors.get_active_doctors()
+
+        # --- 1. Callback button: text is a Doctor ID ---
+        by_id = [d for d in all_active if d.get("Doctor ID", "") == text]
+        if by_id:
+            return self._accept_doctor(state, by_id[0])
+
+        # --- 2. Deterministic fuzzy name matching ---
+        resolved = self._doctors.resolve_doctor(text)
+        if resolved["status"] == "matched":
+            return self._accept_doctor(state, resolved["doctor"])
+        if resolved["status"] == "ambiguous":
+            matches = resolved["matches"]
+            intro = "Multiple doctors matched your request. Please choose one:"
+            response = format_doctor_list_display(matches, intro=intro)
+            return {
+                **state,
+                "doctor_fuzzy_candidate": matches[0],
+                "appointment_step": "doctor_confirm_fuzzy",
+                "doctor_choices": matches[:_MAX_BUTTON_DOCTORS],
+                "ui": "doctor_select",
+                "response": response,
+            }
+
+        # --- 3. Specialization keyword match ---
+        spec_canonical = resolve_specialization(text)
+        if spec_canonical:
+            spec_doctors = self._doctors.get_doctors_by_specialization(spec_canonical)
+            if len(spec_doctors) == 1:
+                return self._accept_doctor(state, spec_doctors[0])
+            if spec_doctors:
+                intro = f"Our available {spec_canonical.title()} specialist(s):"
+                response = format_doctor_list_display(spec_doctors, intro=intro)
+                return {**state, "doctor_choices": spec_doctors[:_MAX_BUTTON_DOCTORS], "ui": "doctor_select", "response": response}
+
+        # --- 4. Health concern keyword match ---
+        concern_phrase, concern_spec = match_health_concern(text)
+        if concern_spec:
+            concern_doctors = self._doctors.get_doctors_by_specialization(concern_spec)
+            if len(concern_doctors) == 1:
+                return self._accept_doctor(state, concern_doctors[0])
+            if concern_doctors:
+                spec_name = concern_doctors[0].get("Specialization", concern_spec.title())
+                intro = f"For health concerns related to {concern_phrase}, you may consult our {spec_name} specialist(s):"
+                response = (
+                    format_doctor_list_display(concern_doctors, intro=intro)
+                    + "\n\n*(Note: This is informational based on our clinic specialties and not medical advice.)*"
+                )
+                return {**state, "doctor_choices": concern_doctors[:_MAX_BUTTON_DOCTORS], "ui": "doctor_select", "response": response}
+
+        # --- 5. No reliable match — show available doctors list ---
+        if all_active:
+            intro = "I couldn't find a doctor matching that request. Our available doctors are:"
+            response = format_doctor_list_display(all_active, intro=intro)
+            return {**state, "doctor_choices": all_active[:_MAX_BUTTON_DOCTORS], "ui": "doctor_select", "response": response}
+
+        return {**state, "response": "No doctors are available right now. Please contact the clinic team at " + self._support_phone + "."}
+
+    def _handle_fuzzy_confirmation(self, state: GraphState, text: str) -> GraphState:
+        """Handle choice when ambiguous doctor candidates are presented."""
+        lowered = text.casefold().strip()
+        candidate = state.get("doctor_fuzzy_candidate", {})
+
+        is_yes = lowered in {"yes", "yes, confirm", "confirm"} or text == candidate.get("Doctor ID", "__")
+        if is_yes and candidate:
+            return self._accept_doctor(state, candidate)
+
+        # Check if user typed or tapped one of the active doctors
+        all_active = self._doctors.get_active_doctors() if self._doctors else []
+        by_id = [d for d in all_active if d.get("Doctor ID", "") == text]
+        if by_id:
+            return self._accept_doctor(state, by_id[0])
+
+        resolved = self._doctors.resolve_doctor(text) if self._doctors else {"status": "not_found"}
+        if resolved["status"] == "matched":
+            return self._accept_doctor(state, resolved["doctor"])
+
+        intro = "No problem. Our available doctors are:"
+        response = format_doctor_list_display(all_active, intro=intro)
+        return {
+            **state,
+            "doctor_fuzzy_candidate": {},
+            "appointment_step": "doctor",
+            "doctor_choices": all_active[:_MAX_BUTTON_DOCTORS],
+            "ui": "doctor_select",
+            "response": response,
+        }
+
+    def _accept_doctor(self, state: GraphState, doctor: dict) -> GraphState:
+        """Commit doctor selection and advance to the date step."""
+        amount = doctor.get("Consultation Fee", "")
+        if not amount:
+            return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
+        return {
+            **state,
+            "doctor_context": [doctor],
+            "doctor_id": doctor.get("Doctor ID", ""),
+            "doctor_name": doctor.get("Doctor Name", ""),
+            "specialization": doctor.get("Specialization", ""),
+            "amount": amount,
+            "appointment_step": "date",
+            "doctor_choices": [],
+            "doctor_fuzzy_candidate": {},
+            "ui": "",
+            "response": "What date would you prefer? Please use YYYY-MM-DD.",
+        }
+
+    def _handle_date_step(self, state: GraphState, text: str) -> GraphState:
+        if not self._slots or not state.get("doctor_name"):
+            return {**state, "response": "Appointment slots are not configured yet. Please contact the clinic team at " + self._support_phone + "."}
+        date_result = parse_date(text)
+        if not date_result["success"]:
+            return {**state, "response": date_result["message"]}
+        normalized_date = date_result["date"]
+        available_result = self._slots.get_available_slots(state["doctor_name"], normalized_date)
+        if isinstance(available_result, dict) and not available_result.get("success"):
+            return {**state, "response": "I couldn't check availability right now. Please try again or contact clinic support at " + self._support_phone + "."}
+        available = available_result.get("slots", []) if isinstance(available_result, dict) else available_result
+        if not available:
+            return {**state, "response": "No available slots were found for that date. Please choose another date."}
+        return {**state, "appointment_date": normalized_date, "available_slots": available, "appointment_step": "slot", "ui": "slots", "response": "Please select an available slot."}
+
+    # ------------------------------------------------------------------
+    # Summary / offline / helpers
+    # ------------------------------------------------------------------
 
     def _summary(self, state: GraphState, appointment_time: str) -> str:
         return f"Appointment Summary\n\nPatient: {state.get('patient_name', '')}\nDoctor: {state.get('doctor_name', '')}\nDate: {state.get('appointment_date', '')}\nTime: {appointment_time}\nConsultation Fee: {state.get('amount', '')}"
@@ -212,6 +489,6 @@ class GraphNodes:
             response = self._llm.answer(load_system_prompt(self._clinic_name, self._support_phone), state.get("user_text", ""), context)
         except Exception:
             logger.exception("Gemini completion failed")
-            response = "I’m sorry, I’m unable to answer right now. Please try again shortly."
+            response = "I'm sorry, I'm unable to answer right now. Please try again shortly."
         logger.info("Gemini response generated")
         return {**state, "response": response}

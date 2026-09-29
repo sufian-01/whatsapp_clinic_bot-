@@ -1,6 +1,15 @@
-"""Structured doctor lookups backed by a header-driven Google Sheet."""
+"""Structured doctor lookups backed by a header-driven Google Sheet.
 
-from collections.abc import Callable
+Features:
+- Deterministic fuzzy matching using difflib and token-level comparison.
+- Disease/symptom keyword-to-specialization mapping.
+- Structured doctor directory formatting.
+- Date-aware availability lookup from Google Sheet slot records.
+- Zero LLM calls to minimize token usage.
+"""
+
+from difflib import SequenceMatcher
+import re
 from typing import Protocol
 
 
@@ -8,55 +17,315 @@ class SheetReader(Protocol):
     def __call__(self) -> list[list[str]]: ...
 
 
+# ---------------------------------------------------------------------------
+# Specialization keyword aliases (deterministic, no LLM)
+# ---------------------------------------------------------------------------
+_SPECIALIZATION_ALIASES: dict[str, list[str]] = {
+    "cardiology": ["cardio", "cardiologist", "heart", "cardiac"],
+    "gynecology": ["gynecologist", "gynaecologist", "gyne", "gyno", "women"],
+    "general physician": ["general", "gp", "family doctor", "physician"],
+    "dermatology": ["dermatologist", "skin", "derma"],
+    "orthopedics": ["orthopedic", "ortho", "bone", "joint"],
+    "pediatrics": ["pediatrician", "paediatrician", "child", "children", "kids"],
+    "neurology": ["neurologist", "neuro", "brain", "nerve"],
+    "ophthalmology": ["ophthalmologist", "eye", "opthamology"],
+    "ent": ["ear", "nose", "throat", "ent specialist"],
+    "psychiatry": ["psychiatrist", "mental health", "psychology", "psychologist"],
+    "oncology": ["oncologist", "cancer"],
+    "endocrinology": ["endocrinologist", "diabetes", "thyroid", "hormones"],
+}
+
+# ---------------------------------------------------------------------------
+# Health concern / disease / symptom keyword-to-specialization mapping
+# Informational only, not a medical diagnosis
+# ---------------------------------------------------------------------------
+_HEALTH_CONCERN_MAP: dict[str, list[str]] = {
+    "cardiology": [
+        "chest pain", "heart attack", "heart problem", "heart pain", "heart",
+        "palpitation", "palpitations", "blood pressure", "high bp", "bp",
+        "hypertension", "cardiac",
+    ],
+    "gynecology": [
+        "pregnancy", "pregnant", "periods", "period", "menstrual", "menstruation",
+        "pcos", "pcod", "women health", "fertility", "uterus", "ovary", "vaginal",
+    ],
+    "general physician": [
+        "fever", "cold", "cough", "flu", "viral", "headache", "body pain",
+        "weakness", "fatigue", "vomiting", "loose motion", "diarrhea",
+        "stomach pain", "abdominal pain", "gastric", "infection",
+    ],
+    "dermatology": [
+        "skin rash", "skin problem", "skin", "rash", "rashes", "acne", "pimples",
+        "itching", "hair fall", "dandruff", "eczema", "psoriasis", "fungal",
+    ],
+    "orthopedics": [
+        "joint pain", "knee pain", "back pain", "shoulder pain", "neck pain",
+        "bone fracture", "fracture", "bone", "joint", "arthritis", "spine", "sprain",
+    ],
+    "pediatrics": [
+        "child", "children", "baby", "kid", "kids", "infant", "newborn",
+    ],
+    "neurology": [
+        "migraine", "nerve pain", "nerve", "nerves", "brain", "paralysis",
+        "stroke", "seizure", "epilepsy", "tremor", "vertigo", "numbness",
+    ],
+    "ophthalmology": [
+        "eye pain", "eye problem", "eyes", "eye", "vision", "blurry vision",
+        "blur", "cataract", "glaucoma",
+    ],
+    "ent": [
+        "ear pain", "sore throat", "ear", "nose", "throat", "tonsils",
+        "sinus", "sinusitis", "hearing",
+    ],
+    "psychiatry": [
+        "depression", "anxiety", "stress", "mental health", "mental",
+        "insomnia", "sleep disorder", "panic attack",
+    ],
+    "endocrinology": [
+        "high sugar", "blood sugar", "diabetes", "sugar", "thyroid", "hormone", "hormonal",
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def normalize_doctor_text(value: str) -> str:
+    """Lowercase, remove doctor/dr prefixes, punctuation, and normalize extra spaces."""
+    text = value.casefold()
+    text = text.replace("sufiyan", "sufian")
+    text = re.sub(r"\b(doctor|dr)\.?\b", " ", text)
+    text = re.sub(r"[^a-z0-9\s]+", " ", text)
+    return " ".join(text.split())
+
+
+def calculate_doctor_similarity(query: str, doc_name: str) -> float:
+    """Calculate deterministic similarity score between query and doctor name.
+
+    Handles:
+    - Exact name matches
+    - Minor typos (e.g., 'Dr Sufan' -> 'Dr. Sufian')
+    - Incomplete/first names (e.g., 'dr arjun' -> 'Dr. Arjun Mehta')
+    - Extra words like specializations (e.g., 'cardiologist Dr Sufian' -> 'Dr. Sufian')
+    """
+    q_clean = normalize_doctor_text(query)
+    d_clean = normalize_doctor_text(doc_name)
+    if not q_clean or not d_clean:
+        return 0.0
+
+    if q_clean == d_clean:
+        return 1.0
+
+    q_words = q_clean.split()
+    d_words = d_clean.split()
+
+    whole_ratio = SequenceMatcher(None, q_clean, d_clean).ratio()
+
+    # Score each doctor word against query words (coverage of doctor's name in query)
+    doc_word_scores = []
+    for dw in d_words:
+        best_qw = max((SequenceMatcher(None, qw, dw).ratio() for qw in q_words), default=0.0)
+        doc_word_scores.append(best_qw)
+    avg_doc_coverage = sum(doc_word_scores) / len(doc_word_scores) if doc_word_scores else 0.0
+
+    # Score each query word against doctor words
+    q_word_scores = []
+    for qw in q_words:
+        best_dw = max((SequenceMatcher(None, qw, dw).ratio() for dw in d_words), default=0.0)
+        q_word_scores.append(best_dw)
+
+    # Incomplete / first name: single word query matching any doctor token
+    if len(q_words) == 1:
+        single_word_match = max(q_word_scores) if q_word_scores else 0.0
+        return max(whole_ratio, single_word_match)
+
+    # Query contains doctor's name parts (e.g. 'cardiologist Dr Sufian')
+    if avg_doc_coverage >= 0.85:
+        return max(whole_ratio, avg_doc_coverage)
+
+    avg_query_match = sum(q_word_scores) / len(q_words) if q_words else 0.0
+    return max(whole_ratio, avg_doc_coverage, avg_query_match)
+
+
+def resolve_specialization(text: str) -> str | None:
+    """Map free-text specialization keyword to canonical specialization key."""
+    lowered = text.casefold().strip()
+    for canonical, aliases in _SPECIALIZATION_ALIASES.items():
+        if canonical in lowered or any(alias in lowered for alias in aliases):
+            return canonical
+    return None
+
+
+def match_health_concern(text: str) -> tuple[str | None, str | None]:
+    """Map patient health concern/symptom keyword to (matched_phrase, canonical_specialization).
+
+    Informational keyword lookup only, not medical diagnosis.
+    Returns (None, None) if no reliable keyword match exists.
+    """
+    lowered = text.casefold()
+    all_pairs: list[tuple[str, str]] = []
+    for canonical, keywords in _HEALTH_CONCERN_MAP.items():
+        for kw in keywords:
+            all_pairs.append((kw, canonical))
+    # Sort longer phrases first to match multi-word phrases before single words
+    all_pairs.sort(key=lambda x: len(x[0]), reverse=True)
+
+    for kw, canonical in all_pairs:
+        if re.search(r"\b" + re.escape(kw) + r"\b", lowered):
+            return kw, canonical
+    return None, None
+
+
+def format_doctor_list_display(doctors: list[dict], intro: str = "Our available doctors are:") -> str:
+    """Format doctor listing with name, specialization, fee, and available days."""
+    if not doctors:
+        return "No doctors are currently available. Please contact the clinic team."
+
+    entries = []
+    for idx, d in enumerate(doctors, 1):
+        name = d.get("Doctor Name", "Doctor").strip()
+        spec = d.get("Specialization", "General").strip()
+        days = d.get("Available Days", "").strip() or "All Days"
+        fee = d.get("Consultation Fee", "").strip()
+        cleaned_fee = fee.replace("Rs.", "").replace("Rs", "").replace("INR", "").replace("₹", "").strip()
+        fee_display = f"₹{cleaned_fee}" if cleaned_fee else "N/A"
+
+        entry = (
+            f"{idx}. {name}\n"
+            f"   {spec} | {fee_display}\n"
+            f"   Available: {days}"
+        )
+        entries.append(entry)
+
+    return f"{intro}\n\n" + "\n\n".join(entries) + "\n\nPlease select a doctor."
+
+
+# ---------------------------------------------------------------------------
+# DoctorDirectory
+# ---------------------------------------------------------------------------
+
 class DoctorDirectory:
     def __init__(self, read_rows: SheetReader) -> None:
         self._read_rows = read_rows
 
     def get_doctors(self) -> list[dict[str, str]]:
+        """Return all doctor records from the Google Sheet."""
         try:
             rows = self._read_rows()
         except Exception:
             return []
         if not rows:
             return []
-        headers = [header.strip() for header in rows[0]]
+        headers = [h.strip() for h in rows[0]]
         return [
-            {header: row[index].strip() if index < len(row) else "" for index, header in enumerate(headers)}
+            {h: (row[i].strip() if i < len(row) else "") for i, h in enumerate(headers)}
             for row in rows[1:]
             if any(cell.strip() for cell in row)
         ]
 
-    def get_doctor_by_name(self, name: str) -> list[dict[str, str]]:
-        normalized = name.casefold().strip()
+    def get_active_doctors(self) -> list[dict[str, str]]:
+        """Return only active doctors from the Google Sheet."""
+        doctors = self.get_doctors()
         return [
-            doctor for doctor in self.get_doctors()
-            if doctor.get("Doctor Name", "").casefold() == normalized
+            d for d in doctors
+            if d.get("Status", "").strip().casefold() not in ("inactive", "disabled", "unavailable")
         ]
 
+    def get_doctor_by_name(self, name: str) -> list[dict[str, str]]:
+        normalized = name.casefold().strip()
+        return [d for d in self.get_active_doctors() if d.get("Doctor Name", "").casefold() == normalized]
+
     def get_doctors_by_specialization(self, specialization: str) -> list[dict[str, str]]:
+        """Match active doctors by specialization using bidirectional / prefix substring check."""
         normalized = specialization.casefold().strip()
-        return [
-            doctor for doctor in self.get_doctors()
-            if normalized in doctor.get("Specialization", "").casefold()
-        ]
+        result = []
+        for d in self.get_active_doctors():
+            sheet_spec = d.get("Specialization", "").casefold()
+            if (
+                normalized in sheet_spec
+                or sheet_spec in normalized
+                or (len(normalized) >= 5 and sheet_spec.startswith(normalized[:5]))
+                or (len(sheet_spec) >= 5 and normalized.startswith(sheet_spec[:5]))
+            ):
+                result.append(d)
+        return result
 
     def get_doctor_schedule(self, name: str) -> list[dict[str, str]]:
         return [
-            {
-                key: doctor[key]
-                for key in ("Doctor Name", "Available Days", "Start Time", "End Time", "Status")
-                if doctor.get(key)
-            }
-            for doctor in self.get_doctor_by_name(name)
+            {k: d[k] for k in ("Doctor Name", "Available Days", "Start Time", "End Time", "Status") if d.get(k)}
+            for d in self.get_doctor_by_name(name)
         ]
 
+    def get_available_doctors_for_date(self, date: str, slot_repository) -> list[dict[str, str]]:
+        """Return active doctors who have available slots on the specified date."""
+        try:
+            _, records = slot_repository._snapshot()
+        except Exception:
+            return []
+        available_names: set[str] = {
+            r.get("Doctor Name", "").casefold()
+            for r in records
+            if r.get("Date") == date and r.get("Status", "").casefold() == "available"
+        }
+        if not available_names:
+            return []
+        return [d for d in self.get_active_doctors() if d.get("Doctor Name", "").casefold() in available_names]
+
+    def resolve_doctor(self, text: str) -> dict:
+        """Deterministically match text to a doctor using fuzzy and partial matching.
+
+        Returns:
+            {"status": "matched", "doctor": {...}, "score": float}
+            {"status": "ambiguous", "matches": [...], "score": float}
+            {"status": "not_found", "matches": []}
+        """
+        doctors = self.get_active_doctors()
+        if not doctors:
+            return {"status": "not_found", "matches": []}
+
+        normalized_text = normalize_doctor_text(text)
+
+        # Exact match first
+        exact = [d for d in doctors if normalize_doctor_text(d.get("Doctor Name", "")) == normalized_text]
+        if exact:
+            return {"status": "matched", "doctor": exact[0], "score": 1.0}
+
+        # Calculate similarity scores
+        scored = [
+            (d, calculate_doctor_similarity(text, d.get("Doctor Name", "")))
+            for d in doctors
+        ]
+        scored.sort(key=lambda item: item[1], reverse=True)
+
+        if not scored or scored[0][1] < 0.80:
+            return {"status": "not_found", "matches": []}
+
+        best_doc, best_score = scored[0]
+
+        # Check for ambiguity: multiple doctors scoring close to each other
+        if len(scored) > 1 and scored[1][1] >= 0.80 and (best_score - scored[1][1]) < 0.08:
+            ambiguous_matches = [item[0] for item in scored if item[1] >= 0.80]
+            return {"status": "ambiguous", "matches": ambiguous_matches, "score": best_score}
+
+        return {"status": "matched", "doctor": best_doc, "score": best_score}
+
+
+# ---------------------------------------------------------------------------
+# DoctorTools
+# ---------------------------------------------------------------------------
 
 class DoctorTools:
+    """Thin facade over DoctorDirectory for tool integration."""
+
     def __init__(self, directory: DoctorDirectory) -> None:
         self._directory = directory
 
     def get_doctors(self):
         return self._directory.get_doctors()
+
+    def get_active_doctors(self):
+        return self._directory.get_active_doctors()
 
     def search_doctor(self, name: str):
         return self._directory.get_doctor_by_name(name)
@@ -66,3 +335,9 @@ class DoctorTools:
 
     def get_doctor_schedule(self, name: str):
         return self._directory.get_doctor_schedule(name)
+
+    def resolve_doctor(self, text: str) -> dict:
+        return self._directory.resolve_doctor(text)
+
+    def get_available_doctors_for_date(self, date: str, slot_repository) -> list[dict[str, str]]:
+        return self._directory.get_available_doctors_for_date(date, slot_repository)

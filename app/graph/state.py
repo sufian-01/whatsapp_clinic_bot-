@@ -9,6 +9,9 @@ class GraphState(TypedDict, total=False):
     intent: str
     clinic_context: list[str]
     doctor_context: list[dict[str, str]]
+    # Doctor-selection UX
+    doctor_choices: list[dict[str, str]]   # doctors shown as buttons during selection
+    doctor_fuzzy_candidate: dict[str, str] # candidate when fuzzy match is ambiguous
     appointment_step: str
     patient_id: str
     patient_name: str

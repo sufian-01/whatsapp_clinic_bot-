@@ -19,6 +19,13 @@ def slot_menu(slots: list[dict[str, str]]) -> InlineKeyboardMarkup:
     ])
 
 
+def doctor_menu(doctors: list[dict[str, str]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(doctor.get("Doctor Name", "Doctor"), callback_data=f"doctor:{doctor.get('Doctor ID', '')}")]
+        for doctor in doctors
+    ])
+
+
 def confirmation_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("Confirm", callback_data="confirm"), InlineKeyboardButton("Change", callback_data="change")]])
 

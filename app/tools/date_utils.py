@@ -26,3 +26,22 @@ def parse_date(value: str, today: date | None = None) -> dict:
         except (TypeError, ValueError, OverflowError):
             return {"success": False, "error_code": "INVALID_DATE", "message": "I couldn't understand that date."}
     return {"success": True, "date": parsed.isoformat(), "display_date": parsed.strftime("%d %B %Y")}
+
+
+def parse_date_from_text(value: str, today: date | None = None) -> dict:
+    text = value.strip()
+    direct = parse_date(text, today)
+    if direct["success"]:
+        return direct
+    base = today or date.today()
+    lowered = text.casefold()
+    for phrase in ("day after tomorrow", "tomorrow", "next monday", "next tuesday", "next wednesday", "next thursday", "next friday", "next saturday", "next sunday"):
+        if phrase in lowered:
+            return parse_date(phrase, base)
+    if not re.search(r"\d", text):
+        return {"success": False, "error_code": "NO_DATE", "message": "No date was provided."}
+    try:
+        parsed = parser.parse(text, dayfirst=True, fuzzy=True, default=datetime(base.year, 1, 1)).date()
+        return {"success": True, "date": parsed.isoformat(), "display_date": parsed.strftime("%d %B %Y")}
+    except (TypeError, ValueError, OverflowError):
+        return {"success": False, "error_code": "INVALID_DATE", "message": "I couldn't understand that date."}

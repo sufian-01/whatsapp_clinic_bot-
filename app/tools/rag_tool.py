@@ -1,6 +1,9 @@
-"""RAG tool exposed to graph nodes."""
+from __future__ import annotations
 
-from ..rag.service import RagService
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..rag.service import RagService
 import logging
 
 
