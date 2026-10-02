@@ -10,7 +10,9 @@ data/knowledge/uploads/*
 data/knowledge/processed/*
 data/vectorstore/*
 data/invoices/*
+data/audit_logs.jsonl
 
 !data/knowledge/uploads/.gitkeep
 !data/knowledge/processed/.gitkeep
 !data/vectorstore/.gitkeep
+!data/invoices/.gitkeep

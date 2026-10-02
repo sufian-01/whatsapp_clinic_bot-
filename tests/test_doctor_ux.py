@@ -9,6 +9,7 @@ Covers:
 - Telegram button behaviour
 """
 import unittest
+from datetime import date
 from unittest.mock import MagicMock, patch
 
 from app.graph.graph import build_graph
@@ -86,6 +87,7 @@ def _make_graph(fake_llm=None):
         FakeRag(),
         DoctorTools(directory),
         slots=_make_slot_repo(),
+        today_provider=lambda: date(2026, 9, 28),
     )
     return build_graph(nodes), llm
 
@@ -209,8 +211,8 @@ class DoctorListNoSpecificationTests(unittest.TestCase):
         graph, llm = _make_graph()
         result = graph.invoke({"user_text": "which doctors are available?"})
         self.assertIn("Dr. Arjun Mehta", result["response"])
-        self.assertIn("Dr. Sana Khan", result["response"])
         self.assertIn("Dr. Sufian", result["response"])
+        self.assertNotIn("Dr. Sana Khan", result["response"])
         self.assertEqual(llm.call_count, 0, "LLM must NOT be called for doctor list")
 
     def test_which_dr_available_returns_list(self):

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clinic CRM — Admin Dashboard</title>
+  <link rel="stylesheet" href="css/variables.css" />
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/views.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar Backdrop for Mobile -->
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+
+    <!-- Persistent Sidebar Navigation -->
+    <aside id="app-sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-icon">⚕</div>
+        <div class="brand-info">
+          <span class="brand-title" id="header-clinic-name">Clinic Assistant</span>
+          <span class="brand-subtitle">Admin CRM</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section-title">Operations</div>
+        <a href="#dashboard" class="nav-item active" data-view="dashboard">
+          <span class="nav-icon">📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="#appointments" class="nav-item" data-view="appointments">
+          <span class="nav-icon">📅</span>
+          <span>Appointments</span>
+        </a>
+        <a href="#calendar" class="nav-item" data-view="calendar">
+          <span class="nav-icon">🗓️</span>
+          <span>Calendar</span>
+        </a>
+
+        <div class="nav-section-title" style="margin-top: 10px;">Management</div>
+        <a href="#patients" class="nav-item" data-view="patients">
+          <span class="nav-icon">👥</span>
+          <span>Patients</span>
+        </a>
+        <a href="#doctors" class="nav-item" data-view="doctors">
+          <span class="nav-icon">👨‍⚕️</span>
+          <span>Doctors</span>
+        </a>
+        <a href="#slots" class="nav-item" data-view="slots">
+          <span class="nav-icon">⏱️</span>
+          <span>Slots</span>
+        </a>
+
+        <div class="nav-section-title" style="margin-top: 10px;">Finance & Config</div>
+        <a href="#payments" class="nav-item" data-view="payments">
+          <span class="nav-icon">💳</span>
+          <span>Billing</span>
+        </a>
+        <a href="#reports" class="nav-item" data-view="reports">
+          <span class="nav-icon">📈</span>
+          <span>Reports & Analytics</span>
+        </a>
+        <a href="#audit-logs" class="nav-item" data-view="audit-logs">
+          <span class="nav-icon">🛡️</span>
+          <span>Activity Logs</span>
+        </a>
+        <a href="#settings" class="nav-item" data-view="settings">
+          <span class="nav-icon">⚙️</span>
+          <span>Settings</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="user-snippet">
+          <div id="sidebar-user-avatar" class="user-avatar">A</div>
+          <div class="user-meta">
+            <span id="header-user-name" class="user-name">Admin</span>
+            <span class="user-role">Administrator</span>
+          </div>
+        </div>
+        <button id="header-logout-btn" class="btn-icon" title="Sign Out">
+          🚪
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Shell -->
+    <div class="main-wrapper">
+      <!-- Top Sticky Header -->
+      <header class="top-header">
+        <div class="header-left">
+          <button id="mobile-menu-toggle" class="menu-toggle-btn" aria-label="Toggle Navigation">
+            ☰
+          </button>
+          <div class="header-title-container">
+            <h1 id="view-heading" class="view-heading">Dashboard</h1>
+            <span id="view-subheading" class="view-subheading">Clinic Operations & Overview</span>
+          </div>
+        </div>
+        <div class="header-right">
+          <span class="badge badge-completed">
+            <span class="badge-dot"></span> Live Connected
+          </span>
+        </div>
+      </header>
+
+      <!-- Main Dynamic Content Views -->
+      <main class="content-area">
+        <div id="view-dashboard" class="view-container active"></div>
+        <div id="view-appointments" class="view-container"></div>
+        <div id="view-calendar" class="view-container"></div>
+        <div id="view-patients" class="view-container"></div>
+        <div id="view-doctors" class="view-container"></div>
+        <div id="view-slots" class="view-container"></div>
+        <div id="view-payments" class="view-container"></div>
+        <div id="view-reports" class="view-container"></div>
+        <div id="view-audit-logs" class="view-container"></div>
+        <div id="view-settings" class="view-container"></div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Global Modal Dialog -->
+  <div id="app-modal-backdrop" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h2 id="app-modal-title" class="modal-title">Modal Title</h2>
+        <button id="app-modal-close-btn" class="modal-close-btn" aria-label="Close dialog">&times;</button>
+      </div>
+      <div id="app-modal-body" class="modal-body"></div>
+      <div id="app-modal-footer" class="modal-footer" style="display: none;"></div>
+    </div>
+  </div>
+
+  <!-- Global Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Main Modular Application Bootstrap -->
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

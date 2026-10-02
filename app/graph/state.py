@@ -7,6 +7,7 @@ class GraphState(TypedDict, total=False):
     chat_id: int
     user_text: str
     intent: str
+    messages: list[dict[str, str]]
     clinic_context: list[str]
     doctor_context: list[dict[str, str]]
     # Doctor-selection UX
@@ -34,5 +35,18 @@ class GraphState(TypedDict, total=False):
     invoice_number: str
     invoice_path: str
     email_sent: bool
+    # Transport preferences intentionally live beside the existing in-process
+    # conversation state and never affect appointment fields.
+    preferred_language: str
+    voice_replies: bool
     ui: str
     response: str
+    # Reschedule and Cancel states
+    reschedule_step: str
+    reschedule_appointment_id: str
+    reschedule_target_slot: dict[str, str]
+    target_reschedule_date: str
+    cancel_step: str
+    cancel_appointment_id: str
+    cancellation_reason: str
+    upcoming_appointments: list[dict]

@@ -124,6 +124,139 @@ class PatientRepository:
                 return True
         return False
 
+    def list_records(self) -> list[dict[str, str]]:
+        return self._records()
+
+    def update_patient_details(self, patient_id: str, updates: dict[str, str]) -> bool:
+        rows = self._rows()
+        if not rows:
+            return False
+        headers = [h.strip() for h in rows[0]]
+        if "Patient ID" not in headers:
+            return False
+        id_index = headers.index("Patient ID")
+
+        # Map frontend / common keys to headers
+        key_map = {
+            "name": "Name",
+            "email": "Email",
+            "phone": "Phone",
+            "age": "Age",
+            "gender": "Gender",
+            "doctor": "Doctor",
+            "appointment_date": "Appointment Date",
+            "appointment_time": "Appointment Time",
+        }
+
+        sheet_name = self._sheet_range.split("!", 1)[0]
+        normalized_id = patient_id.strip()
+
+        for row_number, row in enumerate(rows[1:], start=2):
+            if id_index < len(row) and row[id_index].strip() == normalized_id:
+                row_dict = {headers[i]: row[i] if i < len(row) else "" for i in range(len(headers))}
+                for k, v in updates.items():
+                    target_header = key_map.get(k, k)
+                    if target_header in headers:
+                        row_dict[target_header] = str(v).strip()
+                values = [row_dict.get(h, "") for h in headers]
+                last_col = _column_name(len(headers) - 1)
+                self._update_cells(f"{sheet_name}!A{row_number}:{last_col}{row_number}", values)
+                return True
+        return False
+
+    def update_payment_status(self, identifier: str, payment_status: str) -> bool:
+        rows = self._rows()
+        if not rows:
+            return False
+        headers = [h.strip() for h in rows[0]]
+        if "Payment Status" not in headers:
+            return False
+        pay_idx = headers.index("Payment Status")
+        id_idx = headers.index("Patient ID") if "Patient ID" in headers else -1
+        token_idx = headers.index("Token No") if "Token No" in headers else -1
+
+        sheet_name = self._sheet_range.split("!", 1)[0]
+        norm = identifier.strip()
+
+        for row_number, row in enumerate(rows[1:], start=2):
+            matches_id = id_idx >= 0 and id_idx < len(row) and row[id_idx].strip() == norm
+            matches_token = token_idx >= 0 and token_idx < len(row) and row[token_idx].strip() == norm
+            if matches_id or matches_token:
+                self._update_cells(f"{sheet_name}!{_column_name(pay_idx)}{row_number}", [payment_status])
+                return True
+        return False
+
+    def update_booking_status(self, identifier: str, booking_status: str) -> bool:
+        rows = self._rows()
+        if not rows:
+            return False
+        headers = [h.strip() for h in rows[0]]
+        id_idx = headers.index("Patient ID") if "Patient ID" in headers else -1
+        token_idx = headers.index("Token No") if "Token No" in headers else -1
+
+        sheet_name = self._sheet_range.split("!", 1)[0]
+        norm = identifier.strip()
+
+        for row_number, row in enumerate(rows[1:], start=2):
+            matches_id = id_idx >= 0 and id_idx < len(row) and row[id_idx].strip() == norm
+            matches_token = token_idx >= 0 and token_idx < len(row) and row[token_idx].strip() == norm
+            if matches_id or matches_token:
+                if "Booking Status" in headers:
+                    b_idx = headers.index("Booking Status")
+                    self._update_cells(f"{sheet_name}!{_column_name(b_idx)}{row_number}", [booking_status])
+                if "Status" in headers:
+                    s_idx = headers.index("Status")
+                    self._update_cells(f"{sheet_name}!{_column_name(s_idx)}{row_number}", [booking_status])
+                return True
+        return False
+
+    def find_by_token(self, token_no: str) -> dict[str, str] | None:
+        norm = token_no.strip().casefold()
+        return next((r for r in self._records() if r.get("Token No", "").strip().casefold() == norm), None)
+
+    def update_appointment_details(self, identifier: str, updates: dict[str, str]) -> bool:
+        rows = self._rows()
+        if not rows:
+            return False
+        headers = [h.strip() for h in rows[0]]
+        id_idx = headers.index("Patient ID") if "Patient ID" in headers else -1
+        token_idx = headers.index("Token No") if "Token No" in headers else -1
+
+        key_map = {
+            "name": "Name",
+            "email": "Email",
+            "phone": "Phone",
+            "doctor": "Doctor",
+            "appointment_date": "Appointment Date",
+            "appointment_time": "Appointment Time",
+            "amount": "Amount",
+            "payment_method": "Payment Method",
+            "payment_status": "Payment Status",
+            "booking_status": "Booking Status",
+            "status": "Booking Status",
+        }
+
+        sheet_name = self._sheet_range.split("!", 1)[0]
+        norm = identifier.strip().casefold()
+
+        for row_number, row in enumerate(rows[1:], start=2):
+            matches_token = token_idx >= 0 and token_idx < len(row) and row[token_idx].strip().casefold() == norm
+            matches_id = id_idx >= 0 and id_idx < len(row) and row[id_idx].strip().casefold() == norm
+            if matches_token or matches_id:
+                row_dict = {headers[i]: row[i] if i < len(row) else "" for i in range(len(headers))}
+                for k, v in updates.items():
+                    target_h = key_map.get(k, k)
+                    if target_h in headers:
+                        row_dict[target_h] = str(v).strip()
+                    if target_h == "Booking Status" and "Status" in headers:
+                        row_dict["Status"] = str(v).strip()
+
+                values = [row_dict.get(h, "") for h in headers]
+                last_col = _column_name(len(headers) - 1)
+                self._update_cells(f"{sheet_name}!A{row_number}:{last_col}{row_number}", values)
+                return True
+        return False
+
     def next_token(self) -> str:
         used = set()
         for record in self._records():
@@ -149,6 +282,9 @@ class PatientRepository:
 class PatientTools:
     def __init__(self, repository: PatientRepository) -> None:
         self._repository = repository
+
+    def list_patients(self) -> list[dict[str, str]]:
+        return self._repository.list_records()
 
     def generate_patient_id(self) -> dict:
         return {"success": True, "patient_id": self._repository.new_patient_id()}
@@ -180,6 +316,30 @@ class PatientTools:
     def update_patient(self, patient_id: str, status: str) -> dict:
         success = self._repository.update_status(patient_id, status)
         return {"success": success, "patient_id": patient_id, "status": status}
+
+    def update_patient_details(self, patient_id: str, updates: dict[str, str]) -> dict:
+        success = self._repository.update_patient_details(patient_id, updates)
+        return {"success": success, "patient_id": patient_id}
+
+    def update_payment_status(self, identifier: str, payment_status: str) -> dict:
+        success = self._repository.update_payment_status(identifier, payment_status)
+        return {"success": success, "identifier": identifier, "payment_status": payment_status}
+
+    def update_booking_status(self, identifier: str, booking_status: str) -> dict:
+        success = self._repository.update_booking_status(identifier, booking_status)
+        return {"success": success, "identifier": identifier, "booking_status": booking_status}
+
+    def find_by_token(self, token_no: str) -> dict | None:
+        if not self._repository or not hasattr(self._repository, "find_by_token"):
+            return None
+        return self._repository.find_by_token(token_no)
+
+    def update_appointment_details(self, identifier: str, updates: dict[str, str]) -> dict:
+        if not self._repository or not hasattr(self._repository, "update_appointment_details"):
+            return {"success": False, "error_code": "NOT_IMPLEMENTED"}
+        success = self._repository.update_appointment_details(identifier, updates)
+        return {"success": success, "identifier": identifier}
+
 
 
 def _column_name(index: int) -> str:

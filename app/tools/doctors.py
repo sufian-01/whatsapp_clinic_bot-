@@ -92,10 +92,12 @@ _HEALTH_CONCERN_MAP: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 
 def normalize_doctor_text(value: str) -> str:
-    """Lowercase, remove doctor/dr prefixes, punctuation, and normalize extra spaces."""
+    """Lowercase, remove doctor/dr prefixes, punctuation, honorifics, and normalize extra spaces."""
     text = value.casefold()
     text = text.replace("sufiyan", "sufian")
+    text = text.replace("sufan", "sufian")
     text = re.sub(r"\b(doctor|dr)\.?\b", " ", text)
+    text = re.sub(r"\b(ji|sahab|saheb|sir|madam)\b", " ", text)
     text = re.sub(r"[^a-z0-9\s]+", " ", text)
     return " ".join(text.split())
 
@@ -143,6 +145,16 @@ def calculate_doctor_similarity(query: str, doc_name: str) -> float:
     # Query contains doctor's name parts (e.g. 'cardiologist Dr Sufian')
     if avg_doc_coverage >= 0.85:
         return max(whole_ratio, avg_doc_coverage)
+
+    # First name or any token match within a multi-word conversational query
+    # (e.g. 'Dr Arjun kab free hain?', 'Dr Sana available hai?')
+    first_name_match = doc_word_scores[0] if doc_word_scores else 0.0
+    if first_name_match >= 0.80:
+        return max(whole_ratio, avg_doc_coverage, first_name_match * 0.92)
+
+    any_doc_word = max(doc_word_scores) if doc_word_scores else 0.0
+    if any_doc_word >= 0.85:
+        return max(whole_ratio, avg_doc_coverage, any_doc_word * 0.90)
 
     avg_query_match = sum(q_word_scores) / len(q_words) if q_words else 0.0
     return max(whole_ratio, avg_doc_coverage, avg_query_match)
@@ -206,8 +218,17 @@ def format_doctor_list_display(doctors: list[dict], intro: str = "Our available 
 # ---------------------------------------------------------------------------
 
 class DoctorDirectory:
-    def __init__(self, read_rows: SheetReader) -> None:
+    def __init__(
+        self,
+        read_rows: SheetReader,
+        append_row=None,
+        update_cells=None,
+        sheet_range: str = "doctor!A1:Z1000",
+    ) -> None:
         self._read_rows = read_rows
+        self._append_row = append_row
+        self._update_cells = update_cells
+        self._sheet_range = sheet_range
 
     def get_doctors(self) -> list[dict[str, str]]:
         """Return all doctor records from the Google Sheet."""
@@ -231,6 +252,10 @@ class DoctorDirectory:
             d for d in doctors
             if d.get("Status", "").strip().casefold() not in ("inactive", "disabled", "unavailable")
         ]
+
+    def get_doctor_by_id(self, doctor_id: str) -> dict[str, str] | None:
+        normalized = doctor_id.strip().casefold()
+        return next((d for d in self.get_doctors() if d.get("Doctor ID", "").strip().casefold() == normalized), None)
 
     def get_doctor_by_name(self, name: str) -> list[dict[str, str]]:
         normalized = name.casefold().strip()
@@ -310,6 +335,108 @@ class DoctorDirectory:
 
         return {"status": "matched", "doctor": best_doc, "score": best_score}
 
+    def add_doctor(self, data: dict[str, str]) -> dict[str, str]:
+        """Add a new doctor to the master sheet."""
+        if not self._append_row:
+            raise RuntimeError("Doctor appending is not configured")
+        rows = self._read_rows() if self._read_rows else []
+        headers = [h.strip() for h in rows[0]] if rows else [
+            "Doctor ID", "Doctor Name", "Specialization", "Available Days",
+            "Start Time", "End Time", "Consultation Fee", "Status"
+        ]
+
+        # Generate Doctor ID if needed
+        existing = self.get_doctors()
+        doc_id = data.get("Doctor ID") or data.get("doctor_id") or ""
+        if not doc_id:
+            max_num = 0
+            for d in existing:
+                val = d.get("Doctor ID", "")
+                if val.startswith("D") and val[1:].isdigit():
+                    max_num = max(max_num, int(val[1:]))
+            doc_id = f"D{max_num + 1}"
+
+        status = data.get("Status") or data.get("status") or "Active"
+        name = data.get("Doctor Name") or data.get("name") or data.get("doctor_name", "")
+        spec = data.get("Specialization") or data.get("specialization", "")
+        days = data.get("Available Days") or data.get("available_days", "")
+        start_time = data.get("Start Time") or data.get("start_time", "")
+        end_time = data.get("End Time") or data.get("end_time", "")
+        fee = data.get("Consultation Fee") or data.get("consultation_fee") or data.get("fee", "")
+
+        row_map = {
+            "Doctor ID": doc_id,
+            "Doctor Name": name,
+            "Specialization": spec,
+            "Available Days": days,
+            "Start Time": start_time,
+            "End Time": end_time,
+            "Consultation Fee": fee,
+            "Status": status,
+        }
+
+        row_values = [row_map.get(h, "") for h in headers]
+        self._append_row(row_values, self._sheet_range)
+        return row_map
+
+    def update_doctor(self, doctor_id: str, updates: dict[str, str]) -> dict[str, str] | None:
+        """Update doctor record by Doctor ID."""
+        if not self._update_cells or not self._read_rows:
+            raise RuntimeError("Doctor updating is not configured")
+        rows = self._read_rows()
+        if not rows:
+            return None
+        headers = [h.strip() for h in rows[0]]
+        if "Doctor ID" not in headers:
+            return None
+        id_index = headers.index("Doctor ID")
+
+        normalized_id = doctor_id.strip().casefold()
+        for row_number, row in enumerate(rows[1:], start=2):
+            if id_index < len(row) and row[id_index].strip().casefold() == normalized_id:
+                # Build updated row
+                row_dict = {headers[i]: row[i] if i < len(row) else "" for i in range(len(headers))}
+                for k, v in updates.items():
+                    # Map common keys
+                    clean_k = k
+                    if k in ("name", "doctor_name"):
+                        clean_k = "Doctor Name"
+                    elif k == "specialization":
+                        clean_k = "Specialization"
+                    elif k == "available_days":
+                        clean_k = "Available Days"
+                    elif k == "start_time":
+                        clean_k = "Start Time"
+                    elif k == "end_time":
+                        clean_k = "End Time"
+                    elif k in ("fee", "consultation_fee"):
+                        clean_k = "Consultation Fee"
+                    elif k == "status":
+                        clean_k = "Status"
+                    if clean_k in headers:
+                        row_dict[clean_k] = str(v).strip()
+
+                values = [row_dict.get(h, "") for h in headers]
+                sheet_name = self._sheet_range.split("!", 1)[0]
+                last_col = _column_name(len(headers) - 1)
+                self._update_cells(f"{sheet_name}!A{row_number}:{last_col}{row_number}", values)
+                return row_dict
+        return None
+
+    def set_doctor_status(self, doctor_id: str, status: str) -> bool:
+        """Activate or deactivate a doctor."""
+        updated = self.update_doctor(doctor_id, {"Status": status})
+        return updated is not None
+
+
+def _column_name(index: int) -> str:
+    name = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
 
 # ---------------------------------------------------------------------------
 # DoctorTools
@@ -327,6 +454,9 @@ class DoctorTools:
     def get_active_doctors(self):
         return self._directory.get_active_doctors()
 
+    def get_doctor_by_id(self, doctor_id: str):
+        return self._directory.get_doctor_by_id(doctor_id)
+
     def search_doctor(self, name: str):
         return self._directory.get_doctor_by_name(name)
 
@@ -341,3 +471,12 @@ class DoctorTools:
 
     def get_available_doctors_for_date(self, date: str, slot_repository) -> list[dict[str, str]]:
         return self._directory.get_available_doctors_for_date(date, slot_repository)
+
+    def add_doctor(self, data: dict[str, str]):
+        return self._directory.add_doctor(data)
+
+    def update_doctor(self, doctor_id: str, updates: dict[str, str]):
+        return self._directory.update_doctor(doctor_id, updates)
+
+    def set_doctor_status(self, doctor_id: str, status: str):
+        return self._directory.set_doctor_status(doctor_id, status)

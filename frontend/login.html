@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clinic CRM — Admin Login</title>
+  <link rel="stylesheet" href="css/variables.css" />
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/views.css" />
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-icon">⚕</div>
+      <h1 class="login-title">Clinic CRM Portal</h1>
+      <p class="login-subtitle">Sign in to manage appointments & clinical records</p>
+    </div>
+
+    <div id="login-error-alert" class="login-alert alert-error"></div>
+
+    <form id="login-form">
+      <div class="form-group">
+        <label for="username-input" class="form-label">Username</label>
+        <input
+          type="text"
+          id="username-input"
+          class="form-input"
+          placeholder="admin"
+          autocomplete="username"
+          required
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="password-input" class="form-label">Password</label>
+        <input
+          type="password"
+          id="password-input"
+          class="form-input"
+          placeholder="••••••••"
+          autocomplete="current-password"
+          required
+        />
+      </div>
+
+      <div style="margin-top: 24px;">
+        <button type="submit" id="login-submit-btn" class="btn btn-primary" style="width: 100%; height: 40px;">
+          <span id="btn-text">Sign In</span>
+          <span id="btn-spinner" class="spinner" style="display: none;"></span>
+        </button>
+      </div>
+    </form>
+
+    <div class="login-footer-hint">
+      Authorized personnel only. Access is cryptographically monitored.
+    </div>
+  </div>
+
+  <script type="module">
+    import { API } from "./js/api.js";
+    import { Auth } from "./js/auth.js";
+
+    // If already logged in, redirect to admin SPA
+    if (Auth.isAuthenticated()) {
+      window.location.href = "/admin/";
+    }
+
+    const form = document.getElementById("login-form");
+    const usernameInput = document.getElementById("username-input");
+    const passwordInput = document.getElementById("password-input");
+    const alertBox = document.getElementById("login-error-alert");
+    const submitBtn = document.getElementById("login-submit-btn");
+    const btnText = document.getElementById("btn-text");
+    const btnSpinner = document.getElementById("btn-spinner");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      alertBox.classList.remove("show");
+      alertBox.textContent = "";
+
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+
+      if (!username || !password) {
+        alertBox.textContent = "Please enter both username and password.";
+        alertBox.classList.add("show");
+        return;
+      }
+
+      // Show spinner
+      submitBtn.disabled = true;
+      btnText.style.display = "none";
+      btnSpinner.style.display = "inline-block";
+
+      try {
+        const res = await API.login(username, password);
+        Auth.setSession(res.token, {
+          username: res.username,
+          role: res.role,
+          clinic_name: res.clinic_name,
+        });
+        window.location.href = "/admin/";
+      } catch (err) {
+        alertBox.textContent = err.message || "Invalid credentials. Please verify.";
+        alertBox.classList.add("show");
+      } finally {
+        submitBtn.disabled = false;
+        btnText.style.display = "inline";
+        btnSpinner.style.display = "none";
+      }
+    });
+  </script>
+</body>
+</html>

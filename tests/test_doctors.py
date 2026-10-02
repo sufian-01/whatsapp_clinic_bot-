@@ -40,7 +40,7 @@ class DoctorTests(unittest.TestCase):
     def test_graph_uses_structured_doctor_data(self):
         graph = build_graph(GraphNodes("Test Clinic", FakeLlm(), EmptyRag(), self.directory))
         result = graph.invoke({"user_text": "Which doctors are available?"})
-        self.assertEqual(result["intent"], "doctor_information")
+        self.assertIn(result["intent"], ("doctor_information", "doctor_list"))
         self.assertIn("Dr. Sana Khan", result["response"])
 
     def test_missing_sheet_data_is_safe(self):

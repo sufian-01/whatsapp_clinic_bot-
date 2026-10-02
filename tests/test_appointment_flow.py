@@ -67,7 +67,7 @@ class AppointmentFlowTests(unittest.TestCase):
         state = self.send(state, "patient@example.com")
         state = self.send(state, "+911234")
         state = self.send(state, "Dr. Sana Khan")
-        state = self.send(state, "2026-09-28")
+        state = self.send(state, "tomorrow")
         self.assertEqual(state["ui"], "slots")
         state = self.send(state, "S1")
         self.assertEqual(state["ui"], "confirm")
@@ -86,7 +86,7 @@ class AppointmentFlowTests(unittest.TestCase):
 
     def test_offline_payment_generates_pending_confirmation(self):
         state = self.graph.invoke({"user_text": "I want to book an appointment"})
-        for text in ["Patient Name", "patient@example.com", "+911234", "Dr. Sana Khan", "2026-09-28", "S1", "confirm"]:
+        for text in ["Patient Name", "patient@example.com", "+911234", "Dr. Sana Khan", "tomorrow", "S1", "confirm"]:
             state = self.send(state, text)
         with tempfile.TemporaryDirectory() as directory:
             fake_invoice = Path(directory, "invoice.pdf")

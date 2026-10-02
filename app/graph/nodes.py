@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from typing import TYPE_CHECKING
 from ..core.prompts import load_system_prompt
@@ -28,6 +30,20 @@ logger = logging.getLogger(__name__)
 _MAX_BUTTON_DOCTORS = 8
 
 
+def _is_hindi_or_hinglish(text: str) -> bool:
+    import re
+    lowered = text.casefold()
+    hindi_tokens = (
+        "kab", "hain", "hai", "karo", "karna", "karni", "kar do", "chahiye", "batao",
+        "dikhao", "aaj", "kal", "parso", "aur", "ko", "par", "pe", "mein", "se",
+        "meri", "mera", "mere", "mujhe", "hum", "aap", "kripya", "namaste", "dhanyawad",
+        "shukriya", "milenge", "milte", "badal", "radd", "kahan", "kitna", "kitne",
+    )
+    if any(re.search(rf"\b{re.escape(token)}\b", lowered) for token in hindi_tokens):
+        return True
+    return any("\u0900" <= ch <= "\u097f" for ch in text)
+
+
 class GraphNodes:
     def __init__(
         self,
@@ -42,6 +58,9 @@ class GraphNodes:
         payments=None,
         invoices=None,
         gmail=None,
+        clinic_timezone: str = "Asia/Kolkata",
+        today_provider=None,
+        crm_service=None,
     ) -> None:
         self._clinic_name = clinic_name
         self._llm = llm
@@ -53,6 +72,20 @@ class GraphNodes:
         self._payments = payments
         self._invoices = invoices or InvoiceTools()
         self._gmail = gmail
+        self._clinic_timezone = clinic_timezone
+        self._today_provider = today_provider
+        if crm_service is not None:
+            self._crm = crm_service
+        else:
+            from ..services.crm_service import CrmService
+            self._crm = CrmService(
+                patients_tools=self._patients,
+                doctors_tools=self._doctors,
+                slots_tools=self._slots,
+                payments_tools=self._payments,
+                clinic_name=self._clinic_name,
+                clinic_timezone=self._clinic_timezone,
+            )
 
     # ------------------------------------------------------------------
     # classify
@@ -111,10 +144,28 @@ class GraphNodes:
 
         text = state.get("user_text", "")
 
-        # 1. Try to extract a date from user text (deterministic)
-        date_result = parse_date_from_text(text)
+        # Availability always comes from appointment slots, never from the
+        # doctors sheet's working-day metadata.
+        date_result = parse_date_from_text(text, self._clinic_today())
         target_date: str | None = date_result["date"] if date_result.get("success") else None
 
+        selected = self._selected_doctor(state)
+        resolved = self._doctors.resolve_doctor(text)
+        named_doctor = resolved.get("doctor") if resolved.get("status") == "matched" else None
+        availability_requested = self._is_availability_request(text)
+        requested_specialization = resolve_specialization(text)
+
+        if named_doctor and (availability_requested or "recommend" in text.casefold()):
+            return self._show_doctor_availability(state, named_doctor, target_date)
+        if selected and (availability_requested or target_date):
+            return self._show_doctor_availability(state, selected, target_date)
+        if availability_requested:
+            return self._show_general_availability(state, target_date, requested_specialization)
+        if requested_specialization and any(term in text.casefold() for term in ("need", "recommend")):
+            return self._show_general_availability(state, target_date, requested_specialization)
+
+        # A date-filtered doctor list remains useful for non-availability
+        # queries, but still uses real slot records.
         if target_date and self._slots:
             doctors = self._doctors.get_available_doctors_for_date(target_date, self._slots)
             if not doctors:
@@ -187,12 +238,199 @@ class GraphNodes:
             "response": response,
         }
 
+    def _clinic_today(self) -> date:
+        if self._today_provider is not None:
+            return self._today_provider()
+        try:
+            return datetime.now(ZoneInfo(self._clinic_timezone)).date()
+        except ZoneInfoNotFoundError:
+            logger.warning("Unknown clinic timezone; falling back to UTC")
+            return datetime.now(ZoneInfo("UTC")).date()
+
+    @staticmethod
+    def _is_availability_request(text: str) -> bool:
+        lowered = text.casefold()
+        return any(term in lowered for term in ("available", "availability", "free", "slot", "slots", "when", "kab", "aur kab", "date"))
+
+    def _selected_doctor(self, state: GraphState) -> dict | None:
+        if self._doctors is None or not state.get("doctor_name"):
+            return None
+        for doctor in self._doctors.get_active_doctors():
+            if state.get("doctor_id") and doctor.get("Doctor ID") == state.get("doctor_id"):
+                return doctor
+            if doctor.get("Doctor Name", "").casefold() == state["doctor_name"].casefold():
+                return doctor
+        return None
+
+    def _upcoming_slots(self, doctor: dict | None = None) -> list[dict]:
+        if self._slots is None or not hasattr(self._slots, "get_upcoming_available_slots"):
+            return []
+        try:
+            result = self._slots.get_upcoming_available_slots(
+                doctor.get("Doctor Name", "") if doctor else "",
+                doctor.get("Doctor ID", "") if doctor else "",
+                self._clinic_today().isoformat(),
+            )
+        except Exception:
+            logger.warning("Upcoming appointment availability lookup failed")
+            return []
+        if isinstance(result, dict):
+            return result.get("slots", []) if result.get("success", False) else []
+        return result if isinstance(result, list) else []
+
+    @staticmethod
+    def _format_time(value: str) -> str:
+        for pattern in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I %p"):
+            try:
+                parsed = datetime.strptime(value.strip(), pattern)
+                hour = parsed.hour % 12 or 12
+                return f"{hour}:{parsed.minute:02d} {'AM' if parsed.hour < 12 else 'PM'}"
+            except ValueError:
+                continue
+        return value
+
+    def _format_availability(self, slots: list[dict], max_dates: int = 3, max_slots_per_date: int = 4) -> str:
+        grouped: dict[str, list[dict]] = {}
+        for slot in slots:
+            grouped.setdefault(slot.get("Date", ""), []).append(slot)
+        lines: list[str] = []
+        for slot_date in sorted(grouped)[:max_dates]:
+            try:
+                label = date.fromisoformat(slot_date).strftime("%d %B")
+            except ValueError:
+                continue
+            times = [self._format_time(slot.get("Start Time", "")) for slot in grouped[slot_date][:max_slots_per_date]]
+            if len(grouped[slot_date]) > max_slots_per_date:
+                times.append("more slots")
+            lines.append(f"- {label}: {', '.join(time for time in times if time)}")
+        return "\n".join(lines)
+
+    def _show_doctor_availability(self, state: GraphState, doctor: dict, requested_date: str | None = None) -> GraphState:
+        all_slots = self._upcoming_slots(doctor)
+        details = self._doctor_details(doctor)
+        name = doctor.get("Doctor Name", "this doctor")
+        if requested_date:
+            requested_slots = [slot for slot in all_slots if slot.get("Date") == requested_date]
+            if requested_slots:
+                label = date.fromisoformat(requested_date).strftime("%d %B")
+                times = ", ".join(self._format_time(slot.get("Start Time", "")) for slot in requested_slots)
+                return {**state, **details, "appointment_date": requested_date, "available_slots": requested_slots, "response": f"{name} is available on {label}: {times}. Which time would you prefer?"}
+            nearest = [slot for slot in all_slots if slot.get("Date", "") > requested_date]
+            if nearest:
+                return {
+                    **state,
+                    **details,
+                    "response": f"{name} has no available slots on {date.fromisoformat(requested_date).strftime('%d %B')}. Nearest upcoming availability:\n{self._format_availability(nearest)}\n\nWhich date would you prefer?",
+                }
+            return {**state, **details, "response": f"{name} has no available slots on that date or in the upcoming schedule. I can check another doctor or date."}
+        if not all_slots:
+            return {**state, **details, "response": f"{name} has no upcoming available slots. I can check another doctor or date."}
+        return {
+            **state,
+            **details,
+            "available_slots": all_slots,
+            "response": f"{name} is available on:\n{self._format_availability(all_slots)}\n\nWhich date would you prefer? Reply with a date to see more times.",
+        }
+
+    def _show_general_availability(self, state: GraphState, requested_date: str | None = None, specialization: str | None = None) -> GraphState:
+        slots = self._upcoming_slots()
+        if requested_date:
+            slots = [slot for slot in slots if slot.get("Date") == requested_date]
+        if not slots:
+            if not requested_date and self._doctors:
+                all_active = self._doctors.get_active_doctors()
+                if specialization:
+                    all_active = self._doctors.get_doctors_by_specialization(specialization)
+                if all_active:
+                    response = format_doctor_list_display(all_active)
+                    return {
+                        **state,
+                        "doctor_choices": all_active[:_MAX_BUTTON_DOCTORS],
+                        "ui": "doctor_select",
+                        "response": response,
+                    }
+            detail = f" on {date.fromisoformat(requested_date).strftime('%d %B')}" if requested_date else ""
+            return {**state, "response": f"No doctors have available appointment slots{detail}. Please try another date."}
+        names = {slot.get("Doctor Name", "").casefold() for slot in slots}
+        doctors = [
+            doctor for doctor in self._doctors.get_active_doctors()
+            if doctor.get("Doctor Name", "").casefold() in names
+            and (not specialization or doctor in self._doctors.get_doctors_by_specialization(specialization))
+        ]
+        by_doctor: list[str] = []
+        for doctor in doctors[:_MAX_BUTTON_DOCTORS]:
+            doctor_slots = [slot for slot in slots if slot.get("Doctor Name", "").casefold() == doctor.get("Doctor Name", "").casefold()]
+            by_doctor.append(f"- {doctor.get('Doctor Name', 'Doctor')}:\n{self._format_availability(doctor_slots, max_dates=1)}")
+        heading = f"Doctors with available slots on {date.fromisoformat(requested_date).strftime('%d %B')}:" if requested_date else "Doctors with upcoming available appointments:"
+        return {
+            **state,
+            "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
+            "ui": "doctor_select",
+            "response": heading + "\n" + "\n".join(by_doctor) + "\n\nPlease select a doctor. Reply with a doctor name or a specific date to see more.",
+        }
+
+    @staticmethod
+    def _doctor_details(doctor: dict) -> dict:
+        return {
+            "doctor_context": [doctor],
+            "doctor_id": doctor.get("Doctor ID", ""),
+            "doctor_name": doctor.get("Doctor Name", ""),
+            "specialization": doctor.get("Specialization", ""),
+            "amount": doctor.get("Consultation Fee", ""),
+        }
+
+    def _extract_slot_from_text(self, state: GraphState, text: str) -> dict | None:
+        import re
+        slots = state.get("available_slots", [])
+        if not slots:
+            return None
+        lowered = text.casefold()
+        if lowered.startswith("slot:"):
+            sid = lowered.removeprefix("slot:").strip()
+            return next((s for s in slots if s.get("Slot ID", "").casefold() == sid), None)
+        time_match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|baje)?\b", lowered)
+        if time_match:
+            hour_str, min_str, period = time_match.groups()
+            hour = int(hour_str)
+            minute = int(min_str) if min_str else 0
+            if period == "pm" and hour < 12:
+                hour += 12
+            target_str = f"{hour:02d}:{minute:02d}"
+            target_12 = f"{hour % 12 or 12}:{minute:02d}"
+            for s in slots:
+                st = s.get("Start Time", "")
+                if target_str in st or target_12 in st:
+                    return s
+        return None
+
     # ------------------------------------------------------------------
     # appointment_start
     # ------------------------------------------------------------------
 
     def appointment_start(self, state: GraphState) -> GraphState:
-        return {**state, "appointment_step": "name", "response": "Sure. May I know your name?"}
+        # If a doctor was named in the booking request, show factual slot
+        # availability before asking the patient to choose a date.
+        text = state.get("user_text", "")
+        if self._doctors is not None:
+            resolved = self._doctors.resolve_doctor(text)
+            if resolved.get("status") == "matched":
+                doctor = resolved["doctor"]
+                if not doctor.get("Consultation Fee", ""):
+                    return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
+                selected = {**state, **self._doctor_details(doctor), "appointment_step": "pre_patient_date", "doctor_choices": [], "ui": ""}
+                return self._show_doctor_availability(selected, doctor)
+
+        selected_doc = self._selected_doctor(state)
+        slot_match = self._extract_slot_from_text(state, text)
+        extra = {}
+        if slot_match:
+            extra = {"slot_id": slot_match.get("Slot ID", ""), "appointment_time": slot_match.get("Start Time", "")}
+
+        if selected_doc:
+            doc_name = selected_doc.get("Doctor Name", "")
+            return {**state, **extra, "appointment_step": "name", "response": f"Sure, booking an appointment with Dr. {doc_name}. May I know your name?"}
+
+        return {**state, **extra, "appointment_step": "name", "response": "Sure. May I know your name?"}
 
     # ------------------------------------------------------------------
     # appointment_progress
@@ -211,6 +449,12 @@ class GraphNodes:
             return {**state, "patient_email": text, "appointment_step": "phone", "response": "What phone number should we use?"}
 
         if step == "phone":
+            if state.get("slot_id") and state.get("doctor_name"):
+                summary = self._summary({**state, "patient_phone": text}, state.get("appointment_time", ""))
+                return {**state, "patient_phone": text, "appointment_step": "confirmation", "ui": "confirm", "response": summary + "\n\nPlease confirm your appointment."}
+            selected = self._selected_doctor(state)
+            if selected:
+                return {**state, "patient_phone": text, "appointment_step": "date", **self._show_doctor_availability(state, selected)}
             return {**state, "patient_phone": text, "appointment_step": "doctor", **self._show_doctor_selection(state)}
 
         if step == "doctor":
@@ -219,14 +463,23 @@ class GraphNodes:
         if step == "doctor_confirm_fuzzy":
             return self._handle_fuzzy_confirmation(state, text)
 
-        if step == "date":
+        if step in {"date", "pre_patient_date"}:
             return self._handle_date_step(state, text)
 
-        if step == "slot":
+        if step in {"slot", "pre_patient_slot"}:
             slot_id = text.removeprefix("slot:")
             slot = next((item for item in state.get("available_slots", []) if item.get("Slot ID") == slot_id), None)
             if not slot:
                 return {**state, "response": "That slot is no longer available. Please select another slot."}
+            if step == "pre_patient_slot":
+                return {
+                    **state,
+                    "slot_id": slot_id,
+                    "appointment_time": slot.get("Start Time", ""),
+                    "appointment_step": "name",
+                    "ui": "",
+                    "response": "Great. May I know your name?",
+                }
             summary = self._summary(state, slot.get("Start Time", ""))
             return {**state, "slot_id": slot_id, "appointment_time": slot.get("Start Time", ""), "appointment_step": "confirmation", "ui": "confirm", "response": summary + "\n\nPlease confirm your appointment."}
 
@@ -344,7 +597,7 @@ class GraphNodes:
 
         # --- 5. No reliable match — show available doctors list ---
         if all_active:
-            intro = "I couldn't find a doctor matching that request. Our available doctors are:"
+            intro = "Is naam se doctor nahi mil rahe hain.\nKya aap doctor ka poora naam bata sakte hain?\n\nOur available doctors are:"
             response = format_doctor_list_display(all_active, intro=intro)
             return {**state, "doctor_choices": all_active[:_MAX_BUTTON_DOCTORS], "ui": "doctor_select", "response": response}
 
@@ -381,28 +634,42 @@ class GraphNodes:
         }
 
     def _accept_doctor(self, state: GraphState, doctor: dict) -> GraphState:
-        """Commit doctor selection and advance to the date step."""
+        """Commit doctor selection and show actual upcoming appointment slots."""
         amount = doctor.get("Consultation Fee", "")
         if not amount:
             return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
-        return {
+        selected = {
             **state,
-            "doctor_context": [doctor],
-            "doctor_id": doctor.get("Doctor ID", ""),
-            "doctor_name": doctor.get("Doctor Name", ""),
-            "specialization": doctor.get("Specialization", ""),
-            "amount": amount,
+            **self._doctor_details(doctor),
             "appointment_step": "date",
             "doctor_choices": [],
             "doctor_fuzzy_candidate": {},
             "ui": "",
-            "response": "What date would you prefer? Please use YYYY-MM-DD.",
         }
+        if hasattr(self._slots, "get_upcoming_available_slots"):
+            return self._show_doctor_availability(selected, doctor)
+        # Compatibility for existing lightweight slot adapters. Production
+        # uses AppointmentTools, which implements the availability query.
+        return {**selected, "response": "What date would you prefer? Please use YYYY-MM-DD."}
 
     def _handle_date_step(self, state: GraphState, text: str) -> GraphState:
         if not self._slots or not state.get("doctor_name"):
             return {**state, "response": "Appointment slots are not configured yet. Please contact the clinic team at " + self._support_phone + "."}
-        date_result = parse_date(text)
+        selected = self._selected_doctor(state)
+        if self._is_availability_request(text) and selected:
+            resolved = self._doctors.resolve_doctor(text) if self._doctors else {"status": "not_found"}
+            doctor = resolved.get("doctor") if resolved.get("status") == "matched" else selected
+            target = parse_date_from_text(text, self._clinic_today())
+            return self._show_doctor_availability(state, doctor, target.get("date") if target.get("success") else None)
+
+        # A named doctor at this point means the patient wants to change the
+        # selected doctor, not that the date is invalid.
+        if self._doctors is not None:
+            resolved = self._doctors.resolve_doctor(text)
+            if resolved.get("status") == "matched" and resolved["doctor"].get("Doctor ID") != state.get("doctor_id"):
+                return self._accept_doctor(state, resolved["doctor"])
+
+        date_result = parse_date(text, self._clinic_today())
         if not date_result["success"]:
             return {**state, "response": date_result["message"]}
         normalized_date = date_result["date"]
@@ -411,8 +678,19 @@ class GraphNodes:
             return {**state, "response": "I couldn't check availability right now. Please try again or contact clinic support at " + self._support_phone + "."}
         available = available_result.get("slots", []) if isinstance(available_result, dict) else available_result
         if not available:
+            if selected and hasattr(self._slots, "get_upcoming_available_slots"):
+                return self._show_doctor_availability(state, selected, normalized_date)
             return {**state, "response": "No available slots were found for that date. Please choose another date."}
-        return {**state, "appointment_date": normalized_date, "available_slots": available, "appointment_step": "slot", "ui": "slots", "response": "Please select an available slot."}
+        next_step = "pre_patient_slot" if state.get("appointment_step") == "pre_patient_date" else "slot"
+        times = ", ".join(self._format_time(slot.get("Start Time", "")) for slot in available)
+        return {
+            **state,
+            "appointment_date": normalized_date,
+            "available_slots": available,
+            "appointment_step": next_step,
+            "ui": "slots",
+            "response": f"Available slots on {date_result['display_date']}: {times}. Which time would you prefer?",
+        }
 
     # ------------------------------------------------------------------
     # Summary / offline / helpers
@@ -492,3 +770,545 @@ class GraphNodes:
             response = "I'm sorry, I'm unable to answer right now. Please try again shortly."
         logger.info("Gemini response generated")
         return {**state, "response": response}
+
+    # ------------------------------------------------------------------
+    # Reschedule & Cancellation Flow
+    # ------------------------------------------------------------------
+
+    def _extract_identifier_from_text(self, text: str) -> str | None:
+        """Extract appointment token, patient ID, or phone number from user text."""
+        import re
+        t = text.strip()
+        if t.startswith("appt:"):
+            return t.removeprefix("appt:").strip()
+
+        # Match Token like TKN-0001
+        m_token = re.search(r"\b(TKN[-_]?\d+)\b", t, re.IGNORECASE)
+        if m_token:
+            return m_token.group(1).upper().replace("_", "-")
+
+        # Match PAT-1234
+        m_pat = re.search(r"\b(PAT[-_]?\d+)\b", t, re.IGNORECASE)
+        if m_pat:
+            return m_pat.group(1).upper().replace("_", "-")
+
+        # Strip non-digits to test phone number
+        digits = "".join(ch for ch in t if ch.isdigit())
+        if len(digits) == 10 and digits[0] in "6789":
+            return digits
+        if len(digits) == 12 and digits.startswith("91") and digits[2] in "6789":
+            return digits[2:]
+
+        return None
+
+    def _find_patient_appointments(self, state: GraphState, text: str = "") -> tuple[list[dict], str | None]:
+        """Find upcoming appointments for patient by text, token, phone, or patient ID."""
+        ident = self._extract_identifier_from_text(text) if text else None
+        if not ident:
+            ident = (
+                state.get("reschedule_appointment_id")
+                or state.get("cancel_appointment_id")
+                or state.get("token_no")
+                or state.get("patient_phone")
+                or state.get("patient_id")
+            )
+        if not ident:
+            return [], None
+
+        appts = self._crm.get_patient_upcoming_appointments(
+            phone_or_id=ident,
+            today_str=self._clinic_today().isoformat(),
+        )
+        return appts, ident
+
+    def reschedule_node(self, state: GraphState) -> GraphState:
+        step = state.get("reschedule_step")
+        text = state.get("user_text", "").strip()
+
+        # STEP: Ask identifier
+        if step == "ask_identifier":
+            ident = self._extract_identifier_from_text(text)
+            if not ident:
+                clean_digits = "".join(filter(str.isdigit, text))
+                if len(clean_digits) == 10:
+                    ident = clean_digits
+                elif text.upper().startswith("TKN"):
+                    ident = text.upper()
+                else:
+                    return {
+                        **state,
+                        "response": "Please provide a valid 10-digit phone number or Appointment Token (e.g. TKN-0001).",
+                    }
+
+            appts = self._crm.get_patient_upcoming_appointments(ident, today_str=self._clinic_today().isoformat())
+            if not appts:
+                return {
+                    **state,
+                    "reschedule_step": "",
+                    "ui": "main",
+                    "response": f"I couldn't find any upcoming confirmed appointments for '{ident}'. If you would like to book a new appointment, please choose 'Book Appointment'.",
+                }
+            if len(appts) == 1:
+                appt = appts[0]
+                token = appt.get("token_no") or appt.get("appointment_id")
+                return {
+                    **state,
+                    "reschedule_step": "select_date",
+                    "reschedule_appointment_id": token,
+                    "doctor_name": appt.get("doctor"),
+                    "appointment_date": appt.get("date"),
+                    "appointment_time": appt.get("time"),
+                    "patient_id": appt.get("patient_id"),
+                    "patient_phone": appt.get("phone", ""),
+                    "token_no": token,
+                    "ui": "",
+                    "response": (
+                        f"Found your appointment:\n\n"
+                        f"👨‍⚕️ Doctor: {appt.get('doctor')}\n"
+                        f"📅 Current Schedule: {appt.get('date')} at {appt.get('time')}\n"
+                        f"🎫 Token: {token}\n\n"
+                        f"What new date would you prefer? You can say 'tomorrow', 'next Monday', or reply with a date (YYYY-MM-DD)."
+                    ),
+                }
+            return {
+                **state,
+                "reschedule_step": "select_appointment",
+                "upcoming_appointments": appts,
+                "ui": "select_appointment",
+                "response": "You have multiple upcoming appointments. Please select the one you would like to reschedule:",
+            }
+
+        # STEP: Select appointment from multiple
+        if step == "select_appointment":
+            token = self._extract_identifier_from_text(text) or text
+            appts = state.get("upcoming_appointments", [])
+            chosen = next((a for a in appts if (a.get("token_no") == token or a.get("appointment_id") == token)), None)
+            if not chosen:
+                chosen = self._crm.get_appointment(token)
+            if not chosen:
+                return {
+                    **state,
+                    "response": "Please tap one of the appointments above to select it.",
+                }
+            chosen_token = chosen.get("token_no") or chosen.get("appointment_id")
+            return {
+                **state,
+                "reschedule_step": "select_date",
+                "reschedule_appointment_id": chosen_token,
+                "doctor_name": chosen.get("doctor"),
+                "appointment_date": chosen.get("date"),
+                "appointment_time": chosen.get("time"),
+                "patient_id": chosen.get("patient_id"),
+                "token_no": chosen_token,
+                "ui": "",
+                "response": (
+                    f"Selected appointment with Dr. {chosen.get('doctor')} on {chosen.get('date')} at {chosen.get('time')}.\n\n"
+                    f"What new date would you like to move it to? (You can say 'tomorrow', 'next Monday', or a date like YYYY-MM-DD)."
+                ),
+            }
+
+        # STEP: Select date
+        if step == "select_date":
+            date_res = parse_date_from_text(text, self._clinic_today())
+            if not date_res["success"]:
+                return {**state, "response": date_res["message"] + " Please tell me a date (e.g., 'tomorrow', 'Friday', or YYYY-MM-DD)."}
+            target_date = date_res["date"]
+            doc_name = state.get("doctor_name", "")
+            if not doc_name and state.get("reschedule_appointment_id"):
+                existing = self._crm.get_appointment(state["reschedule_appointment_id"])
+                if existing:
+                    doc_name = existing.get("doctor", "")
+
+            slots_res = self._slots.get_available_slots(doc_name, target_date)
+            open_slots = slots_res.get("slots", []) if isinstance(slots_res, dict) else slots_res
+            if not open_slots:
+                return {
+                    **state,
+                    "response": f"Dr. {doc_name} has no available slots on {date_res['display_date']}. Please choose another date.",
+                }
+            times_str = ", ".join(self._format_time(s.get("Start Time", "")) for s in open_slots)
+            return {
+                **state,
+                "target_reschedule_date": target_date,
+                "available_slots": open_slots,
+                "reschedule_step": "select_slot",
+                "ui": "slots",
+                "response": (
+                    f"Available slots for Dr. {doc_name} on {date_res['display_date']}:\n{times_str}\n\n"
+                    f"Please tap or reply with your preferred time slot:"
+                ),
+            }
+
+        # STEP: Select slot
+        if step == "select_slot":
+            slot_id = text.removeprefix("slot:").strip()
+            slot = next((s for s in state.get("available_slots", []) if s.get("Slot ID") == slot_id), None)
+            if not slot:
+                slot = next((s for s in state.get("available_slots", []) if s.get("Start Time", "").strip().casefold() == text.strip().casefold()), None)
+            if not slot:
+                return {**state, "response": "That slot is not available. Please choose a slot from the buttons above."}
+
+            curr_appt_id = state.get("reschedule_appointment_id") or state.get("token_no")
+            old_date = state.get("appointment_date", "")
+            old_time = state.get("appointment_time", "")
+            new_date = slot.get("Date") or state.get("target_reschedule_date")
+            new_time = slot.get("Start Time")
+            doc = state.get("doctor_name", "")
+
+            summary = (
+                f"🔄 **Reschedule Confirmation**\n\n"
+                f"**Current Schedule:**\n"
+                f"• Doctor: {doc}\n"
+                f"• Date & Time: {old_date} at {old_time}\n"
+                f"• Token: {curr_appt_id}\n\n"
+                f"**New Schedule:**\n"
+                f"• Doctor: {doc}\n"
+                f"• Date & Time: {new_date} at {new_time}\n\n"
+                f"Would you like to confirm this reschedule?"
+            )
+            return {
+                **state,
+                "reschedule_target_slot": slot,
+                "reschedule_step": "confirm",
+                "ui": "reschedule_confirm",
+                "response": summary,
+            }
+
+        # STEP: Confirmation
+        if step == "confirm":
+            if text.casefold() in {"cancel_reschedule", "no", "keep", "nahi", "change", "cancel"}:
+                old_date = state.get("appointment_date", "")
+                old_time = state.get("appointment_time", "")
+                doc = state.get("doctor_name", "")
+                return {
+                    **state,
+                    "reschedule_step": "",
+                    "reschedule_target_slot": {},
+                    "ui": "main",
+                    "response": f"Understood. Your original appointment with Dr. {doc} on {old_date} at {old_time} remains unchanged and confirmed.",
+                }
+            if text.casefold() not in {"confirm_reschedule", "confirm", "yes", "haan", "theek hai"}:
+                return {**state, "response": "Please confirm by tapping 'Confirm Reschedule' or 'Keep Current Booking'."}
+
+            curr_appt_id = state.get("reschedule_appointment_id") or state.get("token_no")
+            slot = state.get("reschedule_target_slot", {})
+            new_slot_id = slot.get("Slot ID", "")
+            new_date = slot.get("Date") or state.get("target_reschedule_date", "")
+            new_time = slot.get("Start Time", "")
+            doc = state.get("doctor_name", "")
+
+            try:
+                res = self._crm.reschedule_appointment(
+                    identifier=curr_appt_id,
+                    new_slot_id=new_slot_id,
+                    new_date=new_date,
+                    new_time=new_time,
+                )
+                success_msg = (
+                    f"✅ **Appointment Rescheduled Successfully!**\n\n"
+                    f"• Doctor: {doc}\n"
+                    f"• New Date: {new_date}\n"
+                    f"• New Time: {new_time}\n"
+                    f"• Token: {curr_appt_id}\n\n"
+                    f"Your appointment is confirmed. See you at the clinic!"
+                )
+                return {
+                    **state,
+                    "appointment_date": new_date,
+                    "appointment_time": new_time,
+                    "slot_id": new_slot_id,
+                    "reschedule_step": "",
+                    "reschedule_target_slot": {},
+                    "ui": "main",
+                    "response": success_msg,
+                }
+            except Exception as err:
+                logger.exception("Chatbot appointment reschedule failed")
+                return {
+                    **state,
+                    "reschedule_step": "",
+                    "ui": "main",
+                    "response": f"I couldn't reschedule the appointment: {err}. Please contact our clinic desk at {self._support_phone}.",
+                }
+
+        # INITIAL ENTRY: No step set yet
+        appts, ident = self._find_patient_appointments(state, text)
+        if not ident:
+            return {
+                **state,
+                "reschedule_step": "ask_identifier",
+                "ui": "",
+                "response": "To reschedule your appointment, could you please provide your registered phone number or Token number (e.g. TKN-0001)?",
+            }
+        if not appts:
+            return {
+                **state,
+                "reschedule_step": "",
+                "ui": "main",
+                "response": f"I couldn't find any upcoming confirmed appointments for '{ident}'. If you would like to book a new appointment, please choose 'Book Appointment'.",
+            }
+        if len(appts) == 1:
+            appt = appts[0]
+            token = appt.get("token_no") or appt.get("appointment_id")
+            # If the user's initial message also included a new date:
+            date_cand = parse_date_from_text(text, self._clinic_today())
+            if date_cand["success"] and date_cand["date"] != appt.get("date"):
+                slots_res = self._slots.get_available_slots(appt.get("doctor"), date_cand["date"])
+                open_slots = slots_res.get("slots", []) if isinstance(slots_res, dict) else slots_res
+                if open_slots:
+                    times_str = ", ".join(self._format_time(s.get("Start Time", "")) for s in open_slots)
+                    return {
+                        **state,
+                        "reschedule_step": "select_slot",
+                        "reschedule_appointment_id": token,
+                        "doctor_name": appt.get("doctor"),
+                        "appointment_date": appt.get("date"),
+                        "appointment_time": appt.get("time"),
+                        "patient_id": appt.get("patient_id"),
+                        "target_reschedule_date": date_cand["date"],
+                        "available_slots": open_slots,
+                        "ui": "slots",
+                        "response": (
+                            f"Rescheduling appointment for Dr. {appt.get('doctor')} (Current: {appt.get('date')} at {appt.get('time')}).\n\n"
+                            f"Available slots on {date_cand['display_date']}:\n{times_str}\n\n"
+                            f"Please choose your preferred time slot:"
+                        ),
+                    }
+
+            return {
+                **state,
+                "reschedule_step": "select_date",
+                "reschedule_appointment_id": token,
+                "doctor_name": appt.get("doctor"),
+                "appointment_date": appt.get("date"),
+                "appointment_time": appt.get("time"),
+                "patient_id": appt.get("patient_id"),
+                "token_no": token,
+                "ui": "",
+                "response": (
+                    f"Found your appointment:\n\n"
+                    f"👨‍⚕️ Doctor: {appt.get('doctor')}\n"
+                    f"📅 Scheduled: {appt.get('date')} at {appt.get('time')}\n"
+                    f"🎫 Token: {token}\n\n"
+                    f"What new date would you prefer? You can say 'tomorrow', 'next Monday', or reply with a date (YYYY-MM-DD)."
+                ),
+            }
+
+        return {
+            **state,
+            "reschedule_step": "select_appointment",
+            "upcoming_appointments": appts,
+            "ui": "select_appointment",
+            "response": "You have multiple upcoming appointments. Please select the one you wish to reschedule:",
+        }
+
+    def cancel_node(self, state: GraphState) -> GraphState:
+        step = state.get("cancel_step")
+        text = state.get("user_text", "").strip()
+
+        # STEP: Ask identifier
+        if step == "ask_identifier":
+            ident = self._extract_identifier_from_text(text)
+            if not ident:
+                clean_digits = "".join(filter(str.isdigit, text))
+                if len(clean_digits) == 10:
+                    ident = clean_digits
+                elif text.upper().startswith("TKN"):
+                    ident = text.upper()
+                else:
+                    return {
+                        **state,
+                        "response": "Please provide your registered 10-digit phone number or Appointment Token (e.g. TKN-0001).",
+                    }
+            appts = self._crm.get_patient_upcoming_appointments(ident, today_str=self._clinic_today().isoformat())
+            if not appts:
+                return {
+                    **state,
+                    "cancel_step": "",
+                    "ui": "main",
+                    "response": f"I couldn't find any active upcoming appointments for '{ident}'.",
+                }
+            if len(appts) == 1:
+                appt = appts[0]
+                token = appt.get("token_no") or appt.get("appointment_id")
+                return {
+                    **state,
+                    "cancel_step": "confirm",
+                    "cancel_appointment_id": token,
+                    "doctor_name": appt.get("doctor"),
+                    "appointment_date": appt.get("date"),
+                    "appointment_time": appt.get("time"),
+                    "patient_id": appt.get("patient_id"),
+                    "token_no": token,
+                    "ui": "cancel_confirm",
+                    "response": (
+                        f"⚠️ **Confirm Appointment Cancellation**\n\n"
+                        f"Are you sure you want to cancel this booking?\n"
+                        f"• Doctor: {appt.get('doctor')}\n"
+                        f"• Date & Time: {appt.get('date')} at {appt.get('time')}\n"
+                        f"• Token: {token}\n\n"
+                        f"Your reserved slot will be released back to the clinic pool."
+                    ),
+                }
+            return {
+                **state,
+                "cancel_step": "select_appointment",
+                "upcoming_appointments": appts,
+                "ui": "select_appointment",
+                "response": "You have multiple upcoming appointments. Please select the one you wish to cancel:",
+            }
+
+        # STEP: Select appointment from multiple
+        if step == "select_appointment":
+            token = self._extract_identifier_from_text(text) or text
+            appts = state.get("upcoming_appointments", [])
+            chosen = next((a for a in appts if (a.get("token_no") == token or a.get("appointment_id") == token)), None)
+            if not chosen:
+                chosen = self._crm.get_appointment(token)
+            if not chosen:
+                return {**state, "response": "Please select one of the appointments listed above."}
+            chosen_token = chosen.get("token_no") or chosen.get("appointment_id")
+            return {
+                **state,
+                "cancel_step": "confirm",
+                "cancel_appointment_id": chosen_token,
+                "doctor_name": chosen.get("doctor"),
+                "appointment_date": chosen.get("date"),
+                "appointment_time": chosen.get("time"),
+                "patient_id": chosen.get("patient_id"),
+                "token_no": chosen_token,
+                "ui": "cancel_confirm",
+                "response": (
+                    f"⚠️ **Confirm Appointment Cancellation**\n\n"
+                    f"Are you sure you want to cancel this booking?\n"
+                    f"• Doctor: {chosen.get('doctor')}\n"
+                    f"• Date & Time: {chosen.get('date')} at {chosen.get('time')}\n"
+                    f"• Token: {chosen_token}\n\n"
+                    f"Your reserved slot will be released back to the clinic pool."
+                ),
+            }
+
+        # STEP: Confirm
+        if step == "confirm":
+            if text.casefold() in {"keep_appointment", "no", "keep", "nahi", "rehne do"}:
+                old_date = state.get("appointment_date", "")
+                old_time = state.get("appointment_time", "")
+                doc = state.get("doctor_name", "")
+                return {
+                    **state,
+                    "cancel_step": "",
+                    "ui": "main",
+                    "response": f"Great! Your appointment with Dr. {doc} on {old_date} at {old_time} remains confirmed.",
+                }
+            if text.casefold() not in {"confirm_cancel", "confirm", "yes", "haan", "cancel", "radd karo"}:
+                return {**state, "response": "Please confirm by tapping 'Yes, Cancel Appointment' or 'Keep My Appointment'."}
+
+            curr_appt_id = state.get("cancel_appointment_id") or state.get("token_no")
+            doc = state.get("doctor_name", "")
+            d = state.get("appointment_date", "")
+            t = state.get("appointment_time", "")
+
+            try:
+                res = self._crm.cancel_appointment(
+                    identifier=curr_appt_id,
+                    reason="Patient requested cancellation via Telegram",
+                )
+                return {
+                    **state,
+                    "cancel_step": "",
+                    "booking_status": "Cancelled",
+                    "ui": "main",
+                    "response": (
+                        f"Your appointment ({curr_appt_id}) with Dr. {doc} on {d} at {t} has been successfully cancelled.\n\n"
+                        f"The reserved slot has been released back to our schedule. If you need a consultation in the future, we'll be glad to help you!"
+                    ),
+                }
+            except Exception as err:
+                logger.exception("Chatbot appointment cancellation failed")
+                return {
+                    **state,
+                    "cancel_step": "",
+                    "ui": "main",
+                    "response": f"I couldn't cancel the appointment: {err}. Please contact clinic support at {self._support_phone}.",
+                }
+
+        # INITIAL ENTRY: No step set yet
+        appts, ident = self._find_patient_appointments(state, text)
+        if not ident:
+            return {
+                **state,
+                "cancel_step": "ask_identifier",
+                "ui": "",
+                "response": "To cancel your appointment, please provide your registered phone number or Token number (e.g., TKN-0001):",
+            }
+        if not appts:
+            return {
+                **state,
+                "cancel_step": "",
+                "ui": "main",
+                "response": f"I couldn't find any active upcoming appointments for '{ident}'.",
+            }
+        if len(appts) == 1:
+            appt = appts[0]
+            token = appt.get("token_no") or appt.get("appointment_id")
+            return {
+                **state,
+                "cancel_step": "confirm",
+                "cancel_appointment_id": token,
+                "doctor_name": appt.get("doctor"),
+                "appointment_date": appt.get("date"),
+                "appointment_time": appt.get("time"),
+                "patient_id": appt.get("patient_id"),
+                "token_no": token,
+                "ui": "cancel_confirm",
+                "response": (
+                    f"⚠️ **Confirm Appointment Cancellation**\n\n"
+                    f"Are you sure you want to cancel this booking?\n"
+                    f"• Doctor: {appt.get('doctor')}\n"
+                    f"• Date & Time: {appt.get('date')} at {appt.get('time')}\n"
+                    f"• Token: {token}\n\n"
+                    f"Your reserved slot will be released back to the clinic pool."
+                ),
+            }
+        return {
+            **state,
+            "cancel_step": "select_appointment",
+            "upcoming_appointments": appts,
+            "ui": "select_appointment",
+            "response": "You have multiple upcoming appointments. Please select the one you wish to cancel:",
+        }
+
+    def my_appointments_node(self, state: GraphState) -> GraphState:
+        text = state.get("user_text", "").strip()
+        appts, ident = self._find_patient_appointments(state, text)
+        if not ident:
+            return {
+                **state,
+                "reschedule_step": "ask_identifier",
+                "ui": "",
+                "response": "To view your appointments, please provide your registered phone number or Token number (e.g. TKN-0001):",
+            }
+        if not appts:
+            return {
+                **state,
+                "ui": "main",
+                "response": f"You don't have any upcoming appointments scheduled under '{ident}'. To book an appointment, tap 'Book Appointment'.",
+            }
+
+        lines = ["📋 **Your Upcoming Appointments:**\n"]
+        for idx, a in enumerate(appts, 1):
+            tok = a.get("token_no") or a.get("appointment_id", "")
+            lines.append(
+                f"{idx}. **Dr. {a.get('doctor', 'Doctor')}**\n"
+                f"   📅 Date: {a.get('date')} | ⏰ Time: {a.get('time')}\n"
+                f"   🎫 Token: {tok} | Status: {a.get('status', 'Confirmed')}\n"
+            )
+        lines.append("\nTo reschedule or change a slot, simply say 'Reschedule'.\nTo cancel an appointment, say 'Cancel'.")
+
+        return {
+            **state,
+            "upcoming_appointments": appts,
+            "ui": "select_appointment" if len(appts) > 1 else "main",
+            "response": "\n".join(lines),
+        }
+

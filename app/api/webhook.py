@@ -7,7 +7,7 @@ from ..core.config import Settings
 from ..telegram.handlers import handle_update
 
 
-def create_webhook_router(settings: Settings, graph, bot) -> APIRouter:
+def create_webhook_router(settings: Settings, graph, bot, sarvam=None) -> APIRouter:
     router = APIRouter()
 
     @router.post(settings.webhook_path)
@@ -19,7 +19,7 @@ def create_webhook_router(settings: Settings, graph, bot) -> APIRouter:
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid Telegram update") from None
         try:
-            await handle_update(update, settings.clinic_name, graph, bot)
+            await handle_update(update, settings.clinic_name, graph, bot, sarvam)
         except Exception:
             import logging
 
