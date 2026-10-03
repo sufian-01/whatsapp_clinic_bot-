@@ -10,6 +10,8 @@ Features:
 
 from difflib import SequenceMatcher
 import re
+from threading import RLock
+import time
 from typing import Protocol
 
 
@@ -224,26 +226,49 @@ class DoctorDirectory:
         append_row=None,
         update_cells=None,
         sheet_range: str = "doctor!A1:Z1000",
+        cache_ttl_seconds: float = 60.0,
     ) -> None:
         self._read_rows = read_rows
         self._append_row = append_row
         self._update_cells = update_cells
         self._sheet_range = sheet_range
+        self._cache_ttl = cache_ttl_seconds
+        self._cache_lock = RLock()
+        self._cache_time: float = 0.0
+        self._cached_doctors: list[dict[str, str]] | None = None
 
-    def get_doctors(self) -> list[dict[str, str]]:
-        """Return all doctor records from the Google Sheet."""
-        try:
-            rows = self._read_rows()
-        except Exception:
-            return []
-        if not rows:
-            return []
-        headers = [h.strip() for h in rows[0]]
-        return [
-            {h: (row[i].strip() if i < len(row) else "") for i, h in enumerate(headers)}
-            for row in rows[1:]
-            if any(cell.strip() for cell in row)
-        ]
+    def invalidate_cache(self) -> None:
+        """Invalidate the in-memory cache to force next read from source."""
+        with self._cache_lock:
+            self._cached_doctors = None
+            self._cache_time = 0.0
+
+    def get_doctors(self, force_refresh: bool = False) -> list[dict[str, str]]:
+        """Return all doctor records from the Google Sheet, utilizing in-memory TTL caching."""
+        with self._cache_lock:
+            now = time.monotonic()
+            if not force_refresh and self._cached_doctors is not None and (now - self._cache_time) < self._cache_ttl:
+                return [dict(d) for d in self._cached_doctors]
+
+            try:
+                rows = self._read_rows()
+            except Exception:
+                return [dict(d) for d in self._cached_doctors] if self._cached_doctors is not None else []
+
+            if not rows:
+                self._cached_doctors = []
+                self._cache_time = now
+                return []
+
+            headers = [h.strip() for h in rows[0]]
+            doctors = [
+                {h: (row[i].strip() if i < len(row) else "") for i, h in enumerate(headers)}
+                for row in rows[1:]
+                if any(cell.strip() for cell in row)
+            ]
+            self._cached_doctors = doctors
+            self._cache_time = now
+            return [dict(d) for d in doctors]
 
     def get_active_doctors(self) -> list[dict[str, str]]:
         """Return only active doctors from the Google Sheet."""
@@ -363,11 +388,15 @@ class DoctorDirectory:
         start_time = data.get("Start Time") or data.get("start_time", "")
         end_time = data.get("End Time") or data.get("end_time", "")
         fee = data.get("Consultation Fee") or data.get("consultation_fee") or data.get("fee", "")
+        qual = data.get("Qualification") or data.get("qualification", "")
+        reg = data.get("Registration Number") or data.get("registration_number") or data.get("reg_no", "")
 
         row_map = {
             "Doctor ID": doc_id,
             "Doctor Name": name,
             "Specialization": spec,
+            "Qualification": qual,
+            "Registration Number": reg,
             "Available Days": days,
             "Start Time": start_time,
             "End Time": end_time,
@@ -377,6 +406,7 @@ class DoctorDirectory:
 
         row_values = [row_map.get(h, "") for h in headers]
         self._append_row(row_values, self._sheet_range)
+        self.invalidate_cache()
         return row_map
 
     def update_doctor(self, doctor_id: str, updates: dict[str, str]) -> dict[str, str] | None:
@@ -413,13 +443,20 @@ class DoctorDirectory:
                         clean_k = "Consultation Fee"
                     elif k == "status":
                         clean_k = "Status"
+                    elif k == "qualification":
+                        clean_k = "Qualification"
+                    elif k in ("registration_number", "reg_no", "registration_no"):
+                        clean_k = "Registration Number"
                     if clean_k in headers:
+                        row_dict[clean_k] = str(v).strip()
+                    else:
                         row_dict[clean_k] = str(v).strip()
 
                 values = [row_dict.get(h, "") for h in headers]
                 sheet_name = self._sheet_range.split("!", 1)[0]
                 last_col = _column_name(len(headers) - 1)
                 self._update_cells(f"{sheet_name}!A{row_number}:{last_col}{row_number}", values)
+                self.invalidate_cache()
                 return row_dict
         return None
 
@@ -447,6 +484,10 @@ class DoctorTools:
 
     def __init__(self, directory: DoctorDirectory) -> None:
         self._directory = directory
+
+    def invalidate_cache(self) -> None:
+        if hasattr(self._directory, "invalidate_cache"):
+            self._directory.invalidate_cache()
 
     def get_doctors(self):
         return self._directory.get_doctors()

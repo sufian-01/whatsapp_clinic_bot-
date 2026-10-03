@@ -30,18 +30,60 @@ class CrmService:
         slots_tools=None,
         payments_tools=None,
         invoices_tools=None,
+        gmail_tools=None,
         audit_service: Optional[AuditService] = None,
         clinic_name: str = "Clinic",
         clinic_timezone: str = "Asia/Kolkata",
+        support_phone: str = "",
+        doctor_accounts=None,
+        prescriptions=None,
     ) -> None:
         self.patients = patients_tools
         self.doctors = doctors_tools
         self.slots = slots_tools
         self.payments = payments_tools
         self.invoices = invoices_tools
+        self.gmail = gmail_tools
         self.audit = audit_service or AuditService()
         self.clinic_name = clinic_name
         self.clinic_timezone = clinic_timezone
+        self.support_phone = support_phone
+
+        if doctor_accounts is not None:
+            self.doctor_accounts = doctor_accounts
+        else:
+            from .doctor_account_service import DoctorAccountService
+            self.doctor_accounts = DoctorAccountService(
+                doctor_directory=self.doctors,
+                audit_service=self.audit,
+            )
+
+        if prescriptions is not None:
+            self.prescriptions = prescriptions
+        else:
+            from .prescription_service import PrescriptionService
+            self.prescriptions = PrescriptionService(audit_service=self.audit)
+
+    def invalidate_patients_cache(self) -> None:
+        """Invalidate the patient sheet cache."""
+        if self.patients and hasattr(self.patients, "invalidate_cache"):
+            self.patients.invalidate_cache()
+
+    def invalidate_doctors_cache(self) -> None:
+        """Invalidate the doctor directory cache."""
+        if self.doctors and hasattr(self.doctors, "invalidate_cache"):
+            self.doctors.invalidate_cache()
+
+    def invalidate_slots_cache(self) -> None:
+        """Invalidate the appointment slot sheet cache."""
+        if self.slots and hasattr(self.slots, "invalidate_cache"):
+            self.slots.invalidate_cache()
+
+    def invalidate_all_caches(self) -> None:
+        """Invalidate all sheet-backed in-memory caches."""
+        self.invalidate_patients_cache()
+        self.invalidate_doctors_cache()
+        self.invalidate_slots_cache()
 
     # ------------------------------------------------------------------
     # DASHBOARD & ANALYTICS
@@ -413,6 +455,7 @@ class CrmService:
             patient_id=data.get("patient_id", "").strip(),
         )
         created = self.patients.create_patient(rec)
+        self.invalidate_patients_cache()
         p_id = created.get("patient_id") if isinstance(created, dict) else getattr(created, "patient_id", "")
         self.audit.record(
             user=admin_user,
@@ -443,6 +486,7 @@ class CrmService:
 
     def update_patient(self, patient_id: str, updates: dict, admin_user: str = "admin") -> dict:
         res = self.patients.update_patient_details(patient_id, updates)
+        self.invalidate_patients_cache()
         if isinstance(res, dict) and res.get("success"):
             self.audit.record(
                 user=admin_user,
@@ -460,6 +504,7 @@ class CrmService:
             raise ValueError(f"Patient '{patient_id}' not found")
 
         res = self.patients.update_patient_details(patient_id, {"Status": "Inactive"})
+        self.invalidate_patients_cache()
         success = res.get("success", False) if isinstance(res, dict) else bool(res)
         if not success:
             raise RuntimeError(f"Failed to deactivate patient '{patient_id}'")
@@ -516,15 +561,72 @@ class CrmService:
                     or q in d.get("Doctor ID", "").casefold()
                 )
             ]
-        return doctors
+        # Pre-fetch appointments once to prevent O(N) Sheet roundtrips
+        try:
+            res = self.list_appointments(page_size=10000)
+            all_appts = res.get("appointments", [])
+        except Exception:
+            all_appts = []
+
+        # Pre-fetch all prescriptions once
+        all_rxs = []
+        if self.prescriptions:
+            try:
+                all_rxs = self.prescriptions.list_prescriptions()
+            except Exception:
+                all_rxs = []
+
+        rx_counts: dict[str, int] = {}
+        for r in all_rxs:
+            if r.get("status") in ("finalized", "amended"):
+                d_id = str(r.get("doctor_id", "")).strip().casefold()
+                if d_id:
+                    rx_counts[d_id] = rx_counts.get(d_id, 0) + 1
+
+        enhanced = []
+        for d in doctors:
+            item = dict(d)
+            doc_id = str(item.get("Doctor ID", "")).strip()
+            doc_name = str(item.get("Doctor Name", "")).strip()
+            norm_name = doc_name.casefold()
+            norm_id = doc_id.casefold()
+
+            matching_appts = sum(
+                1 for a in all_appts
+                if (norm_name and norm_name in a.get("doctor", "").casefold())
+                or (norm_id and norm_id == a.get("doctor_id", "").casefold())
+            )
+            item["assigned_appointments_count"] = matching_appts
+            item["completed_prescriptions_count"] = rx_counts.get(norm_id, 0)
+            enhanced.append(item)
+        return enhanced
 
     def get_doctor(self, doctor_id: str) -> Optional[dict]:
         if not self.doctors:
             return None
-        return self.doctors.get_doctor_by_id(doctor_id)
+        doc = self.doctors.get_doctor_by_id(doctor_id)
+        if not doc:
+            return None
+        doc_dict = dict(doc)
+        try:
+            appts = self.get_doctor_appointments(doctor_id)
+            doc_dict["assigned_appointments_count"] = len(appts)
+        except Exception:
+            doc_dict["assigned_appointments_count"] = 0
+
+        rx_count = 0
+        if self.prescriptions:
+            try:
+                rxs = self.prescriptions.list_prescriptions(doctor_id=doctor_id)
+                rx_count = len([r for r in rxs if r.get("status") in ("finalized", "amended")])
+            except Exception:
+                rx_count = 0
+        doc_dict["completed_prescriptions_count"] = rx_count
+        return doc_dict
 
     def create_doctor(self, data: dict, admin_user: str = "admin") -> dict:
         created = self.doctors.add_doctor(data)
+        self.invalidate_doctors_cache()
         doc_id = created.get("Doctor ID", "") if isinstance(created, dict) else ""
         self.audit.record(
             user=admin_user,
@@ -538,6 +640,7 @@ class CrmService:
     def update_doctor(self, doctor_id: str, updates: dict, admin_user: str = "admin") -> Optional[dict]:
         updated = self.doctors.update_doctor(doctor_id, updates)
         if updated:
+            self.invalidate_doctors_cache()
             self.audit.record(
                 user=admin_user,
                 action="DOCTOR_UPDATE",
@@ -583,6 +686,7 @@ class CrmService:
         """Activate or deactivate a doctor."""
         success = self.doctors.set_doctor_status(doctor_id, status)
         if success:
+            self.invalidate_doctors_cache()
             self.audit.record(
                 user=admin_user,
                 action="DOCTOR_STATUS_CHANGE",
@@ -626,6 +730,8 @@ class CrmService:
                 "patient_name": r.get("Name", ""),
                 "phone": r.get("Phone", ""),
                 "email": r.get("Email", ""),
+                "age": r.get("Age", ""),
+                "gender": r.get("Gender", ""),
                 "doctor": r.get("Doctor", ""),
                 "date": r.get("Appointment Date", ""),
                 "time": r.get("Appointment Time", ""),
@@ -813,6 +919,27 @@ class CrmService:
                     "amount": amount,
                 },
             )
+            self.invalidate_patients_cache()
+            self.invalidate_slots_cache()
+
+            # 8. Send confirmation email
+            email_result = {"email_sent": False, "skipped": True, "reason": "No email service"}
+            if self.gmail and email:
+                email_result = self.gmail.send_appointment_confirmation_email(
+                    recipient=email,
+                    appointment_data={
+                        "patient_name": name,
+                        "doctor": slot_doc_name,
+                        "specialization": slot.get("Specialization", ""),
+                        "date": slot_date,
+                        "time": slot_time,
+                        "token_no": token_no,
+                        "amount": amount,
+                        "payment_status": rec.payment_status,
+                    },
+                    clinic_name=self.clinic_name,
+                    support_phone=getattr(self, 'support_phone', ''),
+                )
 
             return {
                 "success": True,
@@ -827,6 +954,7 @@ class CrmService:
                 "amount": amount,
                 "status": rec.booking_status,
                 "payment_status": rec.payment_status,
+                "email_result": email_result,
             }
 
     def update_appointment_status(self, identifier: str, new_status: str, admin_user: str = "admin") -> dict:
@@ -853,6 +981,7 @@ class CrmService:
             )
 
         self.patients.update_booking_status(identifier, target_status)
+        self.invalidate_patients_cache()
         self.audit.record(
             user=admin_user,
             action="APPOINTMENT_STATUS_UPDATE",
@@ -936,6 +1065,8 @@ class CrmService:
                 entity_id=identifier,
                 details={"reason": reason, "released_slot_id": released_slot_id},
             )
+            self.invalidate_patients_cache()
+            self.invalidate_slots_cache()
 
             return {
                 "success": True,
@@ -1039,6 +1170,8 @@ class CrmService:
                     "new_slot_id": new_slot_id,
                 },
             )
+            self.invalidate_patients_cache()
+            self.invalidate_slots_cache()
 
             return {
                 "success": True,
@@ -1117,6 +1250,7 @@ class CrmService:
         if not self.slots:
             raise RuntimeError("Slot repository not available")
         created = self.slots.create_slot(data)
+        self.invalidate_slots_cache()
         s_id = created.get("Slot ID", "") if isinstance(created, dict) else ""
         self.audit.record(
             user=admin_user,
@@ -1138,6 +1272,7 @@ class CrmService:
                 return None
             raise RuntimeError(res.get("message", "Failed to update slot"))
 
+        self.invalidate_slots_cache()
         self.audit.record(
             user=admin_user,
             action="SLOT_UPDATE",
@@ -1160,6 +1295,7 @@ class CrmService:
 
         success = res.get("success", False) if isinstance(res, dict) else bool(res)
         if success:
+            self.invalidate_slots_cache()
             self.audit.record(
                 user=admin_user,
                 action="SLOT_STATUS_CHANGE",
@@ -1293,6 +1429,7 @@ class CrmService:
             self.patients.update_appointment_details(identifier, updates)
         else:
             self.patients.update_payment_status(identifier, "Paid")
+        self.invalidate_patients_cache()
 
         self.audit.record(
             user=admin_user,
@@ -1458,3 +1595,482 @@ class CrmService:
             raise ValueError(f"Unknown report type '{report_type}'. Allowed: appointments, patients, payments")
 
         return output.getvalue()
+
+    # ------------------------------------------------------------------
+    # DOCTOR PORTAL & CLINICAL WORKFLOW METHODS
+    # ------------------------------------------------------------------
+
+    def _parse_time_minutes(self, time_str: str) -> int:
+        """Parse time string to minutes from midnight (handles 12h and 24h formats)."""
+        clean = time_str.strip().upper()
+        for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M", "%I %p"):
+            try:
+                dt = datetime.strptime(clean, fmt)
+                return dt.hour * 60 + dt.minute
+            except ValueError:
+                pass
+        m = re.match(r"^(\d{1,2}):(\d{2})\s*(AM|PM)?$", clean)
+        if m:
+            h = int(m.group(1))
+            mins = int(m.group(2))
+            meridiem = m.group(3)
+            if meridiem == "PM" and h < 12:
+                h += 12
+            elif meridiem == "AM" and h == 12:
+                h = 0
+            return h * 60 + mins
+        raise ValueError(f"Invalid time format: '{time_str}'")
+
+    def _get_doctor_name_by_id(self, doctor_id: str) -> str:
+        """Resolve canonical doctor name from Doctor Directory or account."""
+        if self.doctors and hasattr(self.doctors, "get_doctor_by_id"):
+            doc = self.doctors.get_doctor_by_id(doctor_id)
+            if doc:
+                return doc.get("Doctor Name", "")
+        # Fallback to doctor accounts
+        if self.doctor_accounts:
+            acc = self.doctor_accounts.get_account_by_doctor_id(doctor_id)
+            if acc:
+                return acc.get("doctor_name", "")
+        return ""
+
+    def get_doctor_slots(self, doctor_id: str, date_filter: str = "", status_filter: str = "") -> list[dict]:
+        """Fetch slots belonging strictly to the specified doctor ID."""
+        doc_name = self._get_doctor_name_by_id(doctor_id)
+        all_slots = self.list_slots(date_filter=date_filter, status_filter=status_filter)
+        norm_id = doctor_id.strip().casefold()
+        norm_name = doc_name.strip().casefold()
+
+        doc_slots = [
+            s for s in all_slots
+            if (s.get("Doctor ID", "").strip().casefold() == norm_id)
+            or (norm_name and s.get("Doctor Name", "").strip().casefold() == norm_name)
+        ]
+        return doc_slots
+
+    def create_doctor_slot(
+        self,
+        doctor_id: str,
+        date_val: str,
+        start_time: str,
+        end_time: str,
+        user: str = "doctor",
+    ) -> dict:
+        """Create a new available slot strictly for the logged-in doctor with safety checks."""
+        # 1. Validate date format
+        try:
+            slot_d = date.fromisoformat(date_val.strip())
+        except ValueError:
+            raise ValueError("Date must be formatted as YYYY-MM-DD.")
+
+        # 2. Parse and validate times
+        start_min = self._parse_time_minutes(start_time)
+        end_min = self._parse_time_minutes(end_time)
+
+        if start_min >= end_min:
+            raise ValueError(f"Start time ({start_time}) must be strictly earlier than end time ({end_time}).")
+
+        duration = end_min - start_min
+        if duration < 10 or duration > 180:
+            raise ValueError(f"Slot duration ({duration} mins) must be between 10 and 180 minutes.")
+
+        # Working hours validation: 08:00 AM (480 mins) to 09:00 PM (1260 mins)
+        if start_min < 480 or end_min > 1260:
+            raise ValueError("Slots can only be scheduled within clinic operating hours (08:00 AM to 09:00 PM).")
+
+        # 3. Prevent past slots
+        now_tz = datetime.now(self._get_tz())
+        today = now_tz.date()
+        current_min = now_tz.hour * 60 + now_tz.minute
+
+        if slot_d < today or (slot_d == today and start_min < current_min):
+            raise ValueError("Cannot create appointment slots in the past.")
+
+        # 4. Overlap check with doctor's existing slots on that date
+        existing_slots = self.get_doctor_slots(doctor_id, date_filter=date_val)
+        for s in existing_slots:
+            s_status = s.get("Status", "").strip().casefold()
+            if s_status in ("cancelled", "unavailable", "disabled"):
+                continue
+            try:
+                exist_s_min = self._parse_time_minutes(s.get("Start Time", ""))
+                exist_e_min = self._parse_time_minutes(s.get("End Time", ""))
+                if max(start_min, exist_s_min) < min(end_min, exist_e_min):
+                    raise ValueError(
+                        f"Slot time {start_time} - {end_time} overlaps with existing slot "
+                        f"'{s.get('Slot ID')}' ({s.get('Start Time')} - {s.get('End Time')})."
+                    )
+            except ValueError as err:
+                if "overlaps" in str(err):
+                    raise
+                continue
+
+        # 5. Resolve doctor name
+        doc_name = self._get_doctor_name_by_id(doctor_id)
+        if not doc_name:
+            doc_name = f"Doctor {doctor_id}"
+
+        # 6. Create slot under booking lock
+        with SlotRepository._booking_lock:
+            payload = {
+                "doctor_id": doctor_id.strip(),
+                "Doctor ID": doctor_id.strip(),
+                "doctor_name": doc_name.strip(),
+                "Doctor Name": doc_name.strip(),
+                "date": date_val.strip(),
+                "Date": date_val.strip(),
+                "start_time": start_time.strip(),
+                "Start Time": start_time.strip(),
+                "end_time": end_time.strip(),
+                "End Time": end_time.strip(),
+                "status": "Available",
+                "Status": "Available",
+            }
+            created = self.create_slot(payload, admin_user=user)
+
+        self.audit.record(
+            user=user,
+            action="DOCTOR_SLOT_CREATE",
+            entity_type="slot",
+            entity_id=created.get("Slot ID", ""),
+            details=payload,
+        )
+        return created
+
+    def update_doctor_slot(
+        self,
+        slot_id: str,
+        doctor_id: str,
+        updates: dict,
+        user: str = "doctor",
+    ) -> dict:
+        """Update doctor's own slot with booked-slot protection and overlap validation."""
+        with SlotRepository._booking_lock:
+            all_slots = self.slots.list_all_slots() if self.slots else []
+            slot = next((s for s in all_slots if s.get("Slot ID") == slot_id), None)
+            if not slot:
+                raise ValueError(f"Slot '{slot_id}' not found.")
+
+            # Isolation check: slot must belong to this doctor
+            doc_name = self._get_doctor_name_by_id(doctor_id)
+            slot_doc_id = slot.get("Doctor ID", "").strip().casefold()
+            slot_doc_name = slot.get("Doctor Name", "").strip().casefold()
+            norm_id = doctor_id.strip().casefold()
+            norm_name = doc_name.strip().casefold()
+
+            if slot_doc_id != norm_id and (not norm_name or slot_doc_name != norm_name):
+                raise PermissionError("Access forbidden: You cannot modify another physician's slots.")
+
+            slot_status = slot.get("Status", "").strip().casefold()
+
+            # Booked slot protection
+            if slot_status == "booked":
+                if any(k in updates for k in ("start_time", "end_time", "date", "Start Time", "End Time", "Date")):
+                    raise ValueError(
+                        "Cannot modify the date or time of an actively booked slot. Reschedule the appointment instead."
+                    )
+                new_status = updates.get("status", updates.get("Status", "")).strip().casefold()
+                if new_status and new_status != "booked":
+                    raise ValueError(
+                        "Cannot mark a booked slot as unavailable. Reschedule or cancel the appointment first."
+                    )
+
+            # If modifying available slot time/date, validate overlap & past time
+            target_date = updates.get("date", updates.get("Date", slot.get("Date", "")))
+            target_start = updates.get("start_time", updates.get("Start Time", slot.get("Start Time", "")))
+            target_end = updates.get("end_time", updates.get("End Time", slot.get("End Time", "")))
+
+            if any(k in updates for k in ("start_time", "end_time", "date", "Start Time", "End Time", "Date")):
+                start_min = self._parse_time_minutes(target_start)
+                end_min = self._parse_time_minutes(target_end)
+                if start_min >= end_min:
+                    raise ValueError(f"Start time ({target_start}) must be earlier than end time ({target_end}).")
+
+                # Past date check
+                now_tz = datetime.now(self._get_tz())
+                today = now_tz.date()
+                slot_d = date.fromisoformat(target_date)
+                current_min = now_tz.hour * 60 + now_tz.minute
+                if slot_d < today or (slot_d == today and start_min < current_min):
+                    raise ValueError("Cannot schedule appointment slots in the past.")
+
+                # Overlap check against doctor's other slots
+                existing = self.get_doctor_slots(doctor_id, date_filter=target_date)
+                for other in existing:
+                    if other.get("Slot ID") == slot_id:
+                        continue
+                    if other.get("Status", "").strip().casefold() in ("cancelled", "unavailable", "disabled"):
+                        continue
+                    o_s_min = self._parse_time_minutes(other.get("Start Time", ""))
+                    o_e_min = self._parse_time_minutes(other.get("End Time", ""))
+                    if max(start_min, o_s_min) < min(end_min, o_e_min):
+                        raise ValueError(
+                            f"Updated time overlaps with slot '{other.get('Slot ID')}' "
+                            f"({other.get('Start Time')} - {other.get('End Time')})."
+                        )
+
+            updated = self.update_slot(slot_id, updates, admin_user=user)
+
+        self.audit.record(
+            user=user,
+            action="DOCTOR_SLOT_UPDATE",
+            entity_type="slot",
+            entity_id=slot_id,
+            details=updates,
+        )
+        return updated
+
+    def delete_doctor_slot(self, slot_id: str, doctor_id: str, user: str = "doctor") -> dict:
+        """Mark slot unavailable or delete with booked-slot protection."""
+        with SlotRepository._booking_lock:
+            all_slots = self.slots.list_all_slots() if self.slots else []
+            slot = next((s for s in all_slots if s.get("Slot ID") == slot_id), None)
+            if not slot:
+                raise ValueError(f"Slot '{slot_id}' not found.")
+
+            doc_name = self._get_doctor_name_by_id(doctor_id)
+            slot_doc_id = slot.get("Doctor ID", "").strip().casefold()
+            slot_doc_name = slot.get("Doctor Name", "").strip().casefold()
+            norm_id = doctor_id.strip().casefold()
+            norm_name = doc_name.strip().casefold()
+
+            if slot_doc_id != norm_id and (not norm_name or slot_doc_name != norm_name):
+                raise PermissionError("Access forbidden: You cannot delete another physician's slots.")
+
+            if slot.get("Status", "").strip().casefold() == "booked":
+                raise RuntimeError("A booked slot cannot be deleted without handling the associated appointment.")
+
+            self.update_slot(slot_id, {"status": "Unavailable"}, admin_user=user)
+
+        self.audit.record(
+            user=user,
+            action="DOCTOR_SLOT_DELETE",
+            entity_type="slot",
+            entity_id=slot_id,
+            details={"status": "Unavailable"},
+        )
+        return {"success": True, "slot_id": slot_id, "message": "Slot has been marked unavailable."}
+
+    def get_doctor_appointments(
+        self,
+        doctor_id: str,
+        date_filter: str = "",
+        status_filter: str = "",
+        search: str = "",
+    ) -> list[dict]:
+        """List appointments assigned strictly to the specified doctor."""
+        doc_name = self._get_doctor_name_by_id(doctor_id)
+        res = self.list_appointments(page_size=10000)
+        all_appts = res.get("appointments", [])
+
+        norm_name = doc_name.strip().casefold()
+        norm_id = doctor_id.strip().casefold()
+
+        # Strict isolation filter
+        doc_appts = [
+            a for a in all_appts
+            if (norm_name and norm_name in a.get("doctor", "").casefold())
+            or (norm_id and norm_id == a.get("doctor_id", "").casefold())
+        ]
+
+        if date_filter:
+            doc_appts = [a for a in doc_appts if a.get("date") == date_filter]
+        if status_filter:
+            q = status_filter.casefold().strip()
+            doc_appts = [a for a in doc_appts if a.get("status", "").casefold() == q]
+        if search:
+            q = search.casefold().strip()
+            doc_appts = [
+                a for a in doc_appts
+                if (
+                    q in a.get("patient_name", "").casefold()
+                    or q in a.get("phone", "").casefold()
+                    or q in a.get("token_no", "").casefold()
+                )
+            ]
+
+        # Attach prescription info if available
+        if self.prescriptions:
+            for a in doc_appts:
+                tkn = a.get("token_no") or a.get("appointment_id", "")
+                rx = self.prescriptions.get_prescription_by_appointment(tkn)
+                a["has_prescription"] = rx is not None
+                a["prescription_id"] = rx.get("prescription_id") if rx else None
+                a["prescription_status"] = rx.get("status") if rx else None
+
+        doc_appts.sort(key=lambda a: (a.get("date", ""), a.get("time", "")), reverse=True)
+        return doc_appts
+
+    def get_doctor_appointment(self, appointment_id: str, doctor_id: str) -> dict:
+        """Fetch details of an appointment assigned to the doctor, with clinical history."""
+        appt = self.get_appointment(appointment_id)
+        if not appt:
+            raise ValueError(f"Appointment '{appointment_id}' not found.")
+
+        doc_name = self._get_doctor_name_by_id(doctor_id)
+        norm_name = doc_name.strip().casefold()
+        norm_id = doctor_id.strip().casefold()
+        appt_doc = appt.get("doctor", "").strip().casefold()
+
+        if (not norm_name or norm_name not in appt_doc) and (norm_id != appt.get("doctor_id", "").casefold()):
+            raise PermissionError("Access forbidden: You cannot access another physician's patient records.")
+
+        # Attach previous visits with this doctor
+        patient_id = appt.get("patient_id")
+        history = []
+        if patient_id:
+            all_visits = self.get_doctor_appointments(doctor_id)
+            history = [v for v in all_visits if v.get("patient_id") == patient_id and v.get("appointment_id") != appointment_id]
+
+        # Attach prescription if available
+        rx = None
+        if self.prescriptions:
+            rx = self.prescriptions.get_prescription_by_appointment(appt.get("token_no") or appointment_id)
+
+        appt_detail = dict(appt)
+        appt_detail["history"] = history
+        appt_detail["prescription"] = rx
+        return appt_detail
+
+    def get_doctor_patients(
+        self,
+        doctor_id: str,
+        search: str = "",
+        require_verified_payment: bool = False,
+    ) -> list[dict]:
+        """Fetch patients assigned to this doctor, enforcing payment rules if required."""
+        appts = self.get_doctor_appointments(doctor_id)
+
+        if require_verified_payment:
+            appts = [a for a in appts if a.get("payment_status", "").casefold() == "paid"]
+
+        # Aggregate unique patients
+        patient_map: dict[str, dict] = {}
+        for a in appts:
+            pid = a.get("patient_id") or a.get("phone", "")
+            if not pid:
+                continue
+
+            if pid not in patient_map:
+                patient_map[pid] = {
+                    "patient_id": a.get("patient_id", ""),
+                    "name": a.get("patient_name", ""),
+                    "phone": a.get("phone", ""),
+                    "email": a.get("email", ""),
+                    "appointment_count": 0,
+                    "last_appointment_date": a.get("date", ""),
+                    "last_status": a.get("status", ""),
+                    "payment_status": a.get("payment_status", ""),
+                }
+            patient_map[pid]["appointment_count"] += 1
+            if a.get("date", "") > patient_map[pid]["last_appointment_date"]:
+                patient_map[pid]["last_appointment_date"] = a.get("date", "")
+                patient_map[pid]["last_status"] = a.get("status", "")
+                patient_map[pid]["payment_status"] = a.get("payment_status", "")
+
+        patients = list(patient_map.values())
+        if search:
+            q = search.casefold().strip()
+            patients = [
+                p for p in patients
+                if q in p.get("name", "").casefold() or q in p.get("phone", "").casefold() or q in p.get("patient_id", "").casefold()
+            ]
+
+        patients.sort(key=lambda p: p.get("last_appointment_date", ""), reverse=True)
+        return patients
+
+    def get_doctor_patient_detail(self, patient_id: str, doctor_id: str) -> dict:
+        """Fetch patient clinical profile, verifying the patient has visits with this doctor."""
+        appts = self.get_doctor_appointments(doctor_id)
+        patient_visits = [a for a in appts if a.get("patient_id") == patient_id]
+
+        if not patient_visits:
+            raise PermissionError("Access forbidden: This patient is not assigned to your consultations.")
+
+        patient_info = self.get_patient(patient_id)
+        if not patient_info:
+            # Fallback from appointment
+            first = patient_visits[0]
+            patient_info = {
+                "patient_id": patient_id,
+                "name": first.get("patient_name"),
+                "phone": first.get("phone"),
+                "email": first.get("email"),
+            }
+
+        # Fetch previous prescriptions by this doctor for this patient
+        prescriptions = []
+        if self.prescriptions:
+            prescriptions = self.prescriptions.list_prescriptions(
+                doctor_id=doctor_id,
+                patient_id=patient_id,
+            )
+
+        return {
+            "patient": patient_info,
+            "visits": patient_visits,
+            "prescriptions": prescriptions,
+        }
+
+    def get_doctor_dashboard_stats(self, doctor_id: str, today_str: Optional[str] = None) -> dict:
+        """Compute live aggregated metrics for the Doctor Dashboard."""
+        now_tz = datetime.now(self._get_tz())
+        today = today_str or now_tz.date().isoformat()
+
+        appts = self.get_doctor_appointments(doctor_id)
+
+        today_appts = []
+        upcoming_appts = []
+        completed_count = 0
+        cancelled_count = 0
+        awaiting_consultation = 0
+        pending_prescriptions = 0
+        unique_patients = set()
+
+        for a in appts:
+            pid = a.get("patient_id") or a.get("phone")
+            if pid:
+                unique_patients.add(pid)
+
+            d = a.get("date", "").strip()
+            st = a.get("status", "").strip().casefold()
+
+            if d == today and st != "cancelled":
+                today_appts.append(a)
+                if st in ("confirmed", "pending"):
+                    awaiting_consultation += 1
+
+            if d > today and st in ("confirmed", "pending"):
+                upcoming_appts.append(a)
+
+            if st == "completed":
+                completed_count += 1
+
+            if st == "cancelled":
+                cancelled_count += 1
+
+            # Pending prescription check
+            if st in ("confirmed", "completed") and (d == today or d >= today):
+                if not a.get("has_prescription") or a.get("prescription_status") != "finalized":
+                    pending_prescriptions += 1
+
+        # Available slots
+        slots = self.get_doctor_slots(doctor_id)
+        available_slots = sum(
+            1 for s in slots
+            if s.get("Status", "").strip().casefold() == "available" and s.get("Date", "") >= today
+        )
+
+        return {
+            "today_date": today,
+            "today_appointments_count": len(today_appts),
+            "upcoming_appointments_count": len(upcoming_appts),
+            "completed_appointments_count": completed_count,
+            "cancelled_appointments_count": cancelled_count,
+            "awaiting_consultation_count": awaiting_consultation,
+            "pending_prescriptions_count": pending_prescriptions,
+            "total_patients": len(unique_patients),
+            "available_slots": available_slots,
+            "today_appointments": today_appts[:10],
+            "upcoming_appointments": upcoming_appts[:10],
+        }

@@ -1,5 +1,6 @@
 /**
  * Dashboard View Module - Clinic Operations Overview.
+ * Displays live aggregated operational metrics, patient flow, and clinical capacity.
  */
 
 import { API } from "../api.js";
@@ -9,15 +10,18 @@ import { PatientsView } from "./patients.js";
 
 export const DashboardView = {
   container: null,
+  isRendering: false,
 
   async init() {
     this.container = document.getElementById("view-dashboard");
     if (!this.container) return;
-    await this.render();
+    this.render();
+    await this.loadData();
   },
 
-  async render() {
+  render() {
     this.container.innerHTML = `
+      <!-- View Header with Actions -->
       <div class="view-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom: 24px;">
         <div>
           <h2 style="font-size: 20px; font-weight: 700; color: var(--text-main); margin-bottom: 4px;">Clinical Operations Overview</h2>
@@ -38,7 +42,7 @@ export const DashboardView = {
 
       <!-- 6 Primary Metric Cards -->
       <div id="dashboard-metrics-container" class="metrics-grid">
-        <div class="metric-card"><div class="metric-label">Loading stats...</div></div>
+        ${this.renderMetricsSkeletons()}
       </div>
 
       <!-- Main Dashboard Split Layout -->
@@ -46,11 +50,11 @@ export const DashboardView = {
         <!-- Main Column: Today's Appointments & Recent Appointments -->
         <div class="dashboard-main-col" style="display:flex; flex-direction:column; gap:24px;">
           <!-- Card 1: Today's Appointments -->
-          <div class="card">
+          <div class="card" id="card-today-appointments">
             <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
               <div style="display:flex; align-items:center; gap:8px;">
                 <span class="card-title">📅 Today's Appointments</span>
-                <span id="today-count-badge" class="badge badge-info">0 Scheduled</span>
+                <span id="today-count-badge" class="badge badge-info">Loading...</span>
               </div>
               <span id="today-date-badge" class="badge badge-completed">Today</span>
             </div>
@@ -68,14 +72,14 @@ export const DashboardView = {
                   </tr>
                 </thead>
                 <tbody id="today-appointments-tbody">
-                  <tr><td colspan="7" class="empty-state-cell">Loading today's schedule...</td></tr>
+                  ${this.renderTableSkeletons(7, 3)}
                 </tbody>
               </table>
             </div>
           </div>
 
           <!-- Card 2: Recent Appointments -->
-          <div class="card">
+          <div class="card" id="card-recent-appointments">
             <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
               <span class="card-title">📋 Recent Appointments</span>
               <a href="#appointments" class="btn btn-secondary btn-sm" style="font-size:12px; padding:4px 10px;">
@@ -96,7 +100,7 @@ export const DashboardView = {
                   </tr>
                 </thead>
                 <tbody id="recent-appointments-tbody">
-                  <tr><td colspan="7" class="empty-state-cell">Loading recent appointments...</td></tr>
+                  ${this.renderTableSkeletons(7, 3)}
                 </tbody>
               </table>
             </div>
@@ -105,8 +109,8 @@ export const DashboardView = {
 
         <!-- Side Column: Clinical Capacity & Recent Patients -->
         <div class="dashboard-side-col" style="display:flex; flex-direction:column; gap:24px;">
-          <!-- Card: Clinical Capacity & Navigation -->
-          <div class="card">
+          <!-- Card 3: Clinical Capacity & Navigation -->
+          <div class="card" id="card-clinical-capacity">
             <div class="card-header">
               <span class="card-title">🏥 Clinical Capacity</span>
             </div>
@@ -135,8 +139,8 @@ export const DashboardView = {
             </div>
           </div>
 
-          <!-- Card: Recent Patients -->
-          <div class="card">
+          <!-- Card 4: Recent Patients -->
+          <div class="card" id="card-recent-patients">
             <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
               <span class="card-title">👥 Recent Patients</span>
               <a href="#patients" class="btn btn-secondary btn-sm" style="font-size:12px; padding:4px 10px;">
@@ -144,19 +148,22 @@ export const DashboardView = {
               </a>
             </div>
             <div class="card-body" id="recent-patients-list" style="padding-top: 8px; padding-bottom: 8px;">
-              <div style="color: var(--text-muted); font-size: 13px;">Loading recent patients...</div>
+              ${this.renderPatientSkeletons(3)}
             </div>
           </div>
         </div>
       </div>
     `;
 
-    // Event listeners for quick action buttons
+    this.bindEvents();
+  },
+
+  bindEvents() {
     document.getElementById("dashboard-refresh-btn")?.addEventListener("click", () => this.loadData());
     document.getElementById("quick-book-appt-btn")?.addEventListener("click", () => AppointmentsView.openBookAppointmentModal());
     document.getElementById("quick-add-patient-btn")?.addEventListener("click", () => PatientsView.openAddPatientModal());
 
-    // Auto-refresh when an appointment or patient is updated
+    // Auto-refresh when an appointment or patient is created/updated
     window.addEventListener("crm:appointment-changed", () => {
       if (document.getElementById("view-dashboard")?.classList.contains("active")) {
         this.loadData();
@@ -167,25 +174,79 @@ export const DashboardView = {
         this.loadData();
       }
     });
+  },
 
-    await this.loadData();
+  renderMetricsSkeletons() {
+    const items = ["Total Patients", "Total Appointments", "Today's Appointments", "Upcoming", "Completed Visits", "Pending Payments"];
+    return items.map(label => `
+      <div class="metric-card">
+        <div class="metric-card-header">
+          <span class="metric-label">${label}</span>
+          <div class="skeleton" style="width: 32px; height: 32px; border-radius: var(--radius-md);"></div>
+        </div>
+        <div class="skeleton" style="height: 32px; width: 60px; margin: 8px 0; border-radius: 4px;"></div>
+        <div class="skeleton" style="height: 12px; width: 120px; border-radius: 4px;"></div>
+      </div>
+    `).join("");
+  },
+
+  renderTableSkeletons(cols = 7, rows = 3) {
+    let out = "";
+    for (let r = 0; r < rows; r++) {
+      out += "<tr>";
+      for (let c = 0; c < cols; c++) {
+        const width = 40 + Math.floor(Math.random() * 50);
+        out += `<td><div class="skeleton" style="height: 14px; width: ${width}%; border-radius: 4px;"></div></td>`;
+      }
+      out += "</tr>";
+    }
+    return out;
+  },
+
+  renderPatientSkeletons(count = 3) {
+    let out = "";
+    for (let i = 0; i < count; i++) {
+      out += `
+        <div class="recent-patient-item" style="padding: 10px 0;">
+          <div class="recent-patient-info" style="display: flex; gap: 10px; align-items: center; width: 100%;">
+            <div class="skeleton" style="width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;"></div>
+            <div style="flex: 1;">
+              <div class="skeleton" style="height: 14px; width: 60%; margin-bottom: 6px; border-radius: 4px;"></div>
+              <div class="skeleton" style="height: 12px; width: 40%; border-radius: 4px;"></div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    return out;
   },
 
   async loadData() {
-    try {
-      const [stats, todayAppts, recentPatients, recentApptsRes] = await Promise.all([
-        API.getDashboardStats(),
-        API.getTodayAppointments(),
-        API.getRecentPatients(6),
-        API.listAppointments({ page: 1, page_size: 6 }),
-      ]);
+    // Run all 4 independent data sections concurrently without blocking each other
+    await Promise.allSettled([
+      this.loadMetrics(),
+      this.loadTodayAppointments(),
+      this.loadRecentAppointments(),
+      this.loadRecentPatients(),
+    ]);
+  },
 
+  async loadMetrics() {
+    try {
+      const stats = await API.getDashboardStats();
       this.renderMetrics(stats);
-      this.renderTodayAppointments(todayAppts);
-      this.renderRecentAppointments(recentApptsRes?.appointments || []);
-      this.renderRecentPatients(recentPatients);
     } catch (err) {
-      showToast(err.message || "Failed to load dashboard data", "error");
+      console.error("Dashboard stats failed to load:", err);
+      const container = document.getElementById("dashboard-metrics-container");
+      if (container) {
+        container.innerHTML = `
+          <div style="grid-column: 1 / -1; background: var(--bg-surface); border: 1px dashed var(--danger-border); border-radius: var(--radius-lg); padding: 20px; text-align: center;">
+            <div style="color: var(--danger-text); font-weight: 600; margin-bottom: 6px;">⚠️ Unable to load metrics: ${escapeHtml(err.message || "Network error")}</div>
+            <button id="retry-metrics-btn" class="btn btn-secondary btn-sm" style="margin-top: 6px;">🔄 Retry Metrics</button>
+          </div>
+        `;
+        document.getElementById("retry-metrics-btn")?.addEventListener("click", () => this.loadMetrics());
+      }
     }
   },
 
@@ -276,6 +337,27 @@ export const DashboardView = {
     }
   },
 
+  async loadTodayAppointments() {
+    try {
+      const appts = await API.getTodayAppointments();
+      this.renderTodayAppointments(appts || []);
+    } catch (err) {
+      console.error("Today's appointments failed to load:", err);
+      const tbody = document.getElementById("today-appointments-tbody");
+      if (tbody) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="7" style="padding: 24px; text-align: center; color: var(--danger-text);">
+              <div>⚠️ Failed to load today's schedule: ${escapeHtml(err.message || "Error")}</div>
+              <button id="retry-today-btn" class="btn btn-secondary btn-sm" style="margin-top: 8px;">🔄 Retry</button>
+            </td>
+          </tr>
+        `;
+        document.getElementById("retry-today-btn")?.addEventListener("click", () => this.loadTodayAppointments());
+      }
+    }
+  },
+
   renderTodayAppointments(appts) {
     const tbody = document.getElementById("today-appointments-tbody");
     if (!tbody) return;
@@ -298,11 +380,11 @@ export const DashboardView = {
     }
 
     tbody.innerHTML = appts.map((a) => {
-      const token = a["Token No"] || a.token_no || "-";
-      const name = a.Name || a.patient_name || "-";
-      const doctor = a.Doctor || a.doctor || "-";
-      const time = a["Appointment Time"] || a.time || "-";
-      const status = a["Booking Status"] || a.Status || a.status || "Confirmed";
+      const token = a["Token No"] || a.token_no || a.appointment_id || "-";
+      const name = a.Name || a.patient_name || a.name || "-";
+      const doctor = a.Doctor || a.doctor_name || a.doctor || "-";
+      const time = a["Appointment Time"] || a.appointment_time || a.time || "-";
+      const status = a["Booking Status"] || a.Status || a.booking_status || a.status || "Confirmed";
       const payStatus = a["Payment Status"] || a.payment_status || "Pending";
       const identifier = token !== "-" ? token : (a["Patient ID"] || a.patient_id);
 
@@ -335,6 +417,27 @@ export const DashboardView = {
     });
   },
 
+  async loadRecentAppointments() {
+    try {
+      const res = await API.listAppointments({ page: 1, page_size: 6 });
+      this.renderRecentAppointments(res?.appointments || []);
+    } catch (err) {
+      console.error("Recent appointments failed to load:", err);
+      const tbody = document.getElementById("recent-appointments-tbody");
+      if (tbody) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="7" style="padding: 24px; text-align: center; color: var(--danger-text);">
+              <div>⚠️ Failed to load recent appointments: ${escapeHtml(err.message || "Error")}</div>
+              <button id="retry-recent-btn" class="btn btn-secondary btn-sm" style="margin-top: 8px;">🔄 Retry</button>
+            </td>
+          </tr>
+        `;
+        document.getElementById("retry-recent-btn")?.addEventListener("click", () => this.loadRecentAppointments());
+      }
+    }
+  },
+
   renderRecentAppointments(appts) {
     const tbody = document.getElementById("recent-appointments-tbody");
     if (!tbody) return;
@@ -351,12 +454,12 @@ export const DashboardView = {
     }
 
     tbody.innerHTML = appts.map((a) => {
-      const token = a["Token No"] || a.token_no || "-";
+      const token = a["Token No"] || a.token_no || a.appointment_id || "-";
       const name = a.Name || a.patient_name || a.name || "-";
-      const doctor = a.Doctor || a.doctor || "-";
+      const doctor = a.Doctor || a.doctor_name || a.doctor || "-";
       const date = a["Appointment Date"] || a.appointment_date || a.date || "-";
       const time = a["Appointment Time"] || a.appointment_time || a.time || "-";
-      const status = a["Booking Status"] || a.Status || a.status || "Confirmed";
+      const status = a["Booking Status"] || a.Status || a.booking_status || a.status || "Confirmed";
       const payStatus = a["Payment Status"] || a.payment_status || "Pending";
 
       return `
@@ -371,6 +474,25 @@ export const DashboardView = {
         </tr>
       `;
     }).join("");
+  },
+
+  async loadRecentPatients() {
+    try {
+      const patients = await API.getRecentPatients(6);
+      this.renderRecentPatients(patients || []);
+    } catch (err) {
+      console.error("Recent patients failed to load:", err);
+      const container = document.getElementById("recent-patients-list");
+      if (container) {
+        container.innerHTML = `
+          <div style="padding: 16px; text-align: center; color: var(--danger-text); font-size: 13px;">
+            <div>⚠️ Unable to load patients: ${escapeHtml(err.message || "Error")}</div>
+            <button id="retry-patients-btn" class="btn btn-secondary btn-sm" style="margin-top: 6px;">🔄 Retry</button>
+          </div>
+        `;
+        document.getElementById("retry-patients-btn")?.addEventListener("click", () => this.loadRecentPatients());
+      }
+    }
   },
 
   renderRecentPatients(patients) {
@@ -397,7 +519,7 @@ export const DashboardView = {
       const phone = p.Phone || p.phone || "-";
       const doctor = p.Doctor || p.doctor || "-";
       const apptDate = p["Appointment Date"] || p.appointment_date || "-";
-      const initials = name.split(" ").map((n) => n[0]).join("").substring(0, 2).toUpperCase();
+      const initials = name.split(" ").filter(Boolean).map((n) => n[0]).join("").substring(0, 2).toUpperCase() || "P";
 
       return `
         <div class="recent-patient-item">

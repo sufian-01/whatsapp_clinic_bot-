@@ -11,12 +11,26 @@ export const PatientsView = {
   currentPage: 1,
   pageSize: 10,
   totalPages: 1,
+  _abortController: null,
 
   async init() {
     this.container = document.getElementById("view-patients");
     if (!this.container) return;
     this.render();
     await this.loadPatients();
+  },
+
+  renderTableSkeletons(cols = 9, rows = 5) {
+    let out = "";
+    for (let r = 0; r < rows; r++) {
+      out += "<tr>";
+      for (let c = 0; c < cols; c++) {
+        const w = 40 + Math.floor(Math.random() * 45);
+        out += `<td><div class="skeleton" style="height:14px; width:${w}%; border-radius:4px;"></div></td>`;
+      }
+      out += "</tr>";
+    }
+    return out;
   },
 
   render() {
@@ -52,7 +66,7 @@ export const PatientsView = {
               </tr>
             </thead>
             <tbody id="patients-table-tbody">
-              <tr><td colspan="9" class="empty-state-cell">Loading patient records...</td></tr>
+              ${this.renderTableSkeletons(9, 5)}
             </tbody>
           </table>
         </div>
@@ -97,12 +111,22 @@ export const PatientsView = {
     const tbody = document.getElementById("patients-table-tbody");
     if (!tbody) return;
 
+    if (this._abortController) {
+      this._abortController.abort();
+    }
+    this._abortController = new AbortController();
+
+    tbody.innerHTML = this.renderTableSkeletons(9, this.pageSize || 5);
+
     try {
-      const res = await API.listPatients({
-        search: this.searchQuery,
-        page: this.currentPage,
-        page_size: this.pageSize,
-      });
+      const res = await API.listPatients(
+        {
+          search: this.searchQuery,
+          page: this.currentPage,
+          page_size: this.pageSize,
+        },
+        { signal: this._abortController.signal }
+      );
 
       this.totalPages = res.total_pages || 1;
       this.currentPage = res.page || 1;
@@ -155,19 +179,23 @@ export const PatientsView = {
         });
       });
     } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="9" class="empty-state-cell" style="color:red;">Error: ${escapeHtml(err.message)}</td></tr>`;
+      if (err.name === "AbortError") return;
+      tbody.innerHTML = `<tr><td colspan="9" class="empty-state-cell" style="padding: 24px; text-align: center;"><div style="color: var(--danger, #ef4444); margin-bottom: 8px; font-weight: 500;">Failed to load patients: ${escapeHtml(err.message || "Unknown error")}</div><button id="patients-retry-btn" class="btn btn-secondary btn-sm" style="display:inline-flex; align-items:center; gap:6px;"><span>🔄</span> Retry</button></td></tr>`;
+      document.getElementById("patients-retry-btn")?.addEventListener("click", () => this.loadPatients());
       showToast(err.message || "Failed to load patients", "error");
     }
   },
 
   async openPatientDetailsModal(patientId) {
     try {
-      const [patient, appts, payments] = await Promise.all([
+      const [patient, appts, payments, rxsRes] = await Promise.all([
         API.getPatient(patientId),
         API.getPatientAppointments(patientId),
         API.getPatientPayments(patientId),
+        API.getAdminPrescriptions({ patient_id: patientId }).catch(() => []),
       ]);
 
+      const prescriptions = Array.isArray(rxsRes) ? rxsRes : (rxsRes.prescriptions || []);
       const isInactive = (patient.status || "Active").toLowerCase() === "inactive";
 
       const bodyHtml = `
@@ -224,7 +252,7 @@ export const PatientsView = {
           <!-- Appointment History -->
           <div>
             <h4 style="font-size:14px; font-weight:700; margin-bottom:10px; color:var(--text-main);">Appointment History (${appts.length})</h4>
-            <div style="max-height: 180px; overflow-y:auto; border:1px solid var(--border-light); border-radius:var(--radius-md);">
+            <div style="max-height: 160px; overflow-y:auto; border:1px solid var(--border-light); border-radius:var(--radius-md);">
               <table class="data-table" style="font-size:12.5px;">
                 <thead>
                   <tr>
@@ -244,6 +272,44 @@ export const PatientsView = {
                         <td>${escapeHtml(a.Doctor || a.doctor || "-")}</td>
                         <td>${renderBadge(a["Booking Status"] || a.status || "Confirmed")}</td>
                         <td>${renderBadge(a["Payment Status"] || a.payment_status || "Pending")}</td>
+                      </tr>
+                    `).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Prescription History -->
+          <div>
+            <h4 style="font-size:14px; font-weight:700; margin-bottom:10px; color:var(--text-main);">Prescription History (${prescriptions.length})</h4>
+            <div style="max-height: 160px; overflow-y:auto; border:1px solid var(--border-light); border-radius:var(--radius-md);">
+              <table class="data-table" style="font-size:12.5px;">
+                <thead>
+                  <tr>
+                    <th>Rx ID</th>
+                    <th>Date</th>
+                    <th>Doctor</th>
+                    <th>Diagnosis</th>
+                    <th>Status</th>
+                    <th style="text-align:right;">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${prescriptions.length === 0 ? `<tr><td colspan="6" class="empty-state-cell">No prescriptions recorded for this patient</td></tr>` : 
+                    prescriptions.map((rx) => `
+                      <tr>
+                        <td style="font-family:monospace; font-weight:600;">${escapeHtml(rx.prescription_id || rx.id)}</td>
+                        <td>${formatDate(rx.date || rx.created_at)}</td>
+                        <td>${escapeHtml(rx.doctor_name || rx.doctor_id || "Doctor")}</td>
+                        <td>${escapeHtml(rx.diagnosis || "—")}</td>
+                        <td>${renderBadge(rx.status || "draft")}</td>
+                        <td style="text-align:right; white-space:nowrap;">
+                          ${(rx.status === "finalized" || rx.status === "amended") ? `
+                            <a href="${API.getAdminPrescriptionPdfUrl(rx.prescription_id || rx.id)}" target="_blank" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;">
+                              📄 PDF
+                            </a>
+                          ` : `<span style="color:var(--text-muted); font-size:11px;">Draft</span>`}
+                        </td>
                       </tr>
                     `).join("")}
                 </tbody>

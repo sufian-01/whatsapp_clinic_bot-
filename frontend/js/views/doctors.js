@@ -9,12 +9,38 @@ export const DoctorsView = {
   container: null,
   searchQuery: "",
   doctorsList: [],
+  _abortController: null,
 
   async init() {
     this.container = document.getElementById("view-doctors");
     if (!this.container) return;
     this.render();
     await this.loadDoctors();
+  },
+
+  renderSkeletons(count = 6) {
+    return Array.from({ length: count }).map(() => `
+      <div class="doctor-card skeleton-card" style="display:flex; flex-direction:column; justify-content:space-between; min-height:240px;">
+        <div>
+          <div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:14px;">
+            <div class="skeleton" style="width:48px; height:48px; border-radius:50%; flex-shrink:0;"></div>
+            <div style="flex:1;">
+              <div class="skeleton" style="height:18px; width:70%; margin-bottom:8px; border-radius:4px;"></div>
+              <div class="skeleton" style="height:13px; width:45%; border-radius:4px;"></div>
+            </div>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+            <div class="skeleton" style="height:12px; width:85%; border-radius:4px;"></div>
+            <div class="skeleton" style="height:12px; width:65%; border-radius:4px;"></div>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; border-top:1px solid var(--border-light); padding-top:12px;">
+          <div class="skeleton" style="height:32px; flex:1; border-radius:4px;"></div>
+          <div class="skeleton" style="height:32px; flex:1; border-radius:4px;"></div>
+          <div class="skeleton" style="height:32px; flex:1; border-radius:4px;"></div>
+        </div>
+      </div>
+    `).join("");
   },
 
   render() {
@@ -34,9 +60,7 @@ export const DoctorsView = {
       </div>
 
       <div id="doctors-grid-container" class="doctors-grid">
-        <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
-          Loading clinic doctors...
-        </div>
+        ${this.renderSkeletons(6)}
       </div>
     `;
 
@@ -56,17 +80,28 @@ export const DoctorsView = {
     const grid = document.getElementById("doctors-grid-container");
     if (!grid) return;
 
+    // Abort previous in-flight request if searching rapidly
+    if (this._abortController) {
+      this._abortController.abort();
+    }
+    this._abortController = new AbortController();
+
+    // Render skeleton state immediately
+    grid.innerHTML = this.renderSkeletons(6);
+
     try {
-      const doctors = await API.listDoctors({
-        search: this.searchQuery,
-      });
+      const doctors = await API.listDoctors(
+        { search: this.searchQuery },
+        { signal: this._abortController.signal }
+      );
 
       this.doctorsList = doctors;
 
       if (!doctors || doctors.length === 0) {
         grid.innerHTML = `
-          <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
-            No doctors found matching criteria.
+          <div style="grid-column: 1 / -1; text-align: center; padding: 48px 20px; color: var(--text-muted);">
+            <div style="font-size: 32px; margin-bottom: 8px;">🩺</div>
+            <p>No doctors found matching criteria.</p>
           </div>
         `;
         return;
@@ -76,22 +111,43 @@ export const DoctorsView = {
         const id = d["Doctor ID"] || d.doctor_id || "";
         const name = d["Doctor Name"] || d.name || "";
         const spec = d["Specialization"] || d.specialization || "";
+        const qual = d["Qualification"] || d.qualification || "MBBS";
+        const regNo = d["Registration Number"] || d.registration_number || d.reg_no || "—";
         const days = d["Available Days"] || d.available_days || "";
         const start = d["Start Time"] || d.start_time || "";
         const end = d["End Time"] || d.end_time || "";
         const fee = d["Consultation Fee"] || d.fee || "";
         const status = d["Status"] || d.status || "Active";
         const isActive = status.toLowerCase() === "active";
+        const apptCount = d.assigned_appointments_count ?? 0;
+        const rxCount = d.completed_prescriptions_count ?? 0;
+        const initial = name.replace("Dr.", "").trim().charAt(0) || "D";
 
         return `
           <div class="doctor-card">
             <div>
-              <div class="doctor-top">
-                <div class="doctor-meta">
-                  <h3>${escapeHtml(name)}</h3>
-                  <div class="doctor-specialty">${escapeHtml(spec)}</div>
+              <div class="doctor-top" style="display:flex; align-items:flex-start; gap:12px;">
+                <div style="width:48px; height:48px; border-radius:50%; background:linear-gradient(135deg, #6366f1, #3b82f6); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:18px; flex-shrink:0; box-shadow:0 2px 8px rgba(99, 102, 241, 0.25);">
+                  ${escapeHtml(initial)}
+                </div>
+                <div class="doctor-meta" style="flex:1;">
+                  <h3 style="margin:0 0 2px 0;">${escapeHtml(name)}</h3>
+                  <div class="doctor-specialty" style="color:var(--primary); font-weight:600;">${escapeHtml(spec)}</div>
+                  <div style="font-size:11.5px; color:var(--text-secondary);">${escapeHtml(qual)} • Reg: <code>${escapeHtml(regNo)}</code></div>
                 </div>
                 ${renderBadge(status)}
+              </div>
+
+              <!-- Operational Stats -->
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; background:var(--bg-app); border:1px solid var(--border-light); border-radius:var(--radius-md); padding:8px 12px; margin:12px 0; text-align:center;">
+                <div>
+                  <span style="font-size:11px; color:var(--text-muted); display:block;">Appointments</span>
+                  <strong style="font-size:14px; color:var(--text-main);">${apptCount}</strong>
+                </div>
+                <div>
+                  <span style="font-size:11px; color:var(--text-muted); display:block;">Completed Rx</span>
+                  <strong style="font-size:14px; color:#10b981;">${rxCount}</strong>
+                </div>
               </div>
 
               <div class="doctor-info-list">
@@ -154,7 +210,20 @@ export const DoctorsView = {
         });
       });
     } catch (err) {
-      grid.innerHTML = `<div style="grid-column: 1 / -1; color: red; text-align: center;">Error: ${escapeHtml(err.message)}</div>`;
+      if (err.name === "AbortError") return;
+      grid.innerHTML = `
+        <div style="grid-column: 1 / -1; text-align: center; padding: 48px 20px; background: var(--bg-surface); border-radius: var(--radius-lg); border: 1px dashed var(--border-light); margin: 20px 0;">
+          <div style="font-size: 36px; margin-bottom: 12px;">⚠️</div>
+          <h4 style="color: var(--text-main); margin-bottom: 6px;">Unable to Load Doctors</h4>
+          <p style="color: var(--danger, #ef4444); font-size: 14px; margin-bottom: 16px; max-width: 480px; margin-left: auto; margin-right: auto;">
+            ${escapeHtml(err.message || "Failed to load clinic doctors. Please check your connection and try again.")}
+          </p>
+          <button id="doctors-retry-btn" class="btn btn-secondary btn-sm" style="display:inline-flex; align-items:center; gap:8px; padding: 6px 16px;">
+            <span>🔄</span> Retry Loading
+          </button>
+        </div>
+      `;
+      document.getElementById("doctors-retry-btn")?.addEventListener("click", () => this.loadDoctors());
       showToast(err.message || "Failed to load doctors", "error");
     }
   },
@@ -194,9 +263,19 @@ export const DoctorsView = {
           <label class="form-label">Doctor Name *</label>
           <input type="text" id="add-doc-name" class="form-input" placeholder="e.g. Dr. Arjun Mehta" required />
         </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Specialization *</label>
+            <input type="text" id="add-doc-spec" class="form-input" placeholder="e.g. General Physician" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Qualification</label>
+            <input type="text" id="add-doc-qual" class="form-input" placeholder="e.g. MBBS, MD" value="MBBS" />
+          </div>
+        </div>
         <div class="form-group">
-          <label class="form-label">Specialization *</label>
-          <input type="text" id="add-doc-spec" class="form-input" placeholder="e.g. General Physician" required />
+          <label class="form-label">Medical Registration Number</label>
+          <input type="text" id="add-doc-reg" class="form-input" placeholder="e.g. GMC-98721" />
         </div>
         <div class="form-group">
           <label class="form-label">Available Days</label>
@@ -240,6 +319,8 @@ export const DoctorsView = {
       const payload = {
         name: document.getElementById("add-doc-name").value.trim(),
         specialization: document.getElementById("add-doc-spec").value.trim(),
+        qualification: document.getElementById("add-doc-qual").value.trim(),
+        registration_number: document.getElementById("add-doc-reg").value.trim(),
         available_days: document.getElementById("add-doc-days").value.trim(),
         start_time: document.getElementById("add-doc-start").value.trim(),
         end_time: document.getElementById("add-doc-end").value.trim(),
@@ -267,6 +348,8 @@ export const DoctorsView = {
     const id = doctor["Doctor ID"] || doctor.doctor_id;
     const name = doctor["Doctor Name"] || doctor.name || "";
     const spec = doctor["Specialization"] || doctor.specialization || "";
+    const qual = doctor["Qualification"] || doctor.qualification || "";
+    const regNo = doctor["Registration Number"] || doctor.registration_number || doctor.reg_no || "";
     const days = doctor["Available Days"] || doctor.available_days || "";
     const start = doctor["Start Time"] || doctor.start_time || "";
     const end = doctor["End Time"] || doctor.end_time || "";
@@ -279,9 +362,19 @@ export const DoctorsView = {
           <label class="form-label">Doctor Name</label>
           <input type="text" id="edit-doc-name" class="form-input" value="${escapeHtml(name)}" required />
         </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Specialization</label>
+            <input type="text" id="edit-doc-spec" class="form-input" value="${escapeHtml(spec)}" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Qualification</label>
+            <input type="text" id="edit-doc-qual" class="form-input" value="${escapeHtml(qual)}" placeholder="e.g. MBBS, MD" />
+          </div>
+        </div>
         <div class="form-group">
-          <label class="form-label">Specialization</label>
-          <input type="text" id="edit-doc-spec" class="form-input" value="${escapeHtml(spec)}" required />
+          <label class="form-label">Medical Registration Number</label>
+          <input type="text" id="edit-doc-reg" class="form-input" value="${escapeHtml(regNo)}" placeholder="e.g. GMC-98721" />
         </div>
         <div class="form-group">
           <label class="form-label">Available Days</label>
@@ -324,6 +417,8 @@ export const DoctorsView = {
       const updates = {
         name: document.getElementById("edit-doc-name").value.trim(),
         specialization: document.getElementById("edit-doc-spec").value.trim(),
+        qualification: document.getElementById("edit-doc-qual").value.trim(),
+        registration_number: document.getElementById("edit-doc-reg").value.trim(),
         available_days: document.getElementById("edit-doc-days").value.trim(),
         start_time: document.getElementById("edit-doc-start").value.trim(),
         end_time: document.getElementById("edit-doc-end").value.trim(),

@@ -158,3 +158,16 @@ export const Modal = {
     }
   },
 };
+
+export function renderTableSkeletons(cols = 6, rows = 5) {
+  let out = "";
+  for (let r = 0; r < rows; r++) {
+    out += "<tr>";
+    for (let c = 0; c < cols; c++) {
+      const width = 45 + Math.floor(Math.random() * 45);
+      out += `<td><div class="skeleton" style="height: 14px; width: ${width}%; border-radius: 4px;"></div></td>`;
+    }
+    out += "</tr>";
+  }
+  return out;
+}

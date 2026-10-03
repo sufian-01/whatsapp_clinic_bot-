@@ -35,7 +35,7 @@ a:hover {
 /* Sidebar */
 .sidebar {
   width: var(--sidebar-width);
-  background: var(--bg-surface);
+  background: var(--sidebar-gradient);
   border-right: 1px solid var(--border-light);
   display: flex;
   flex-direction: column;
@@ -60,7 +60,7 @@ a:hover {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--primary) 0%, #1e40af 100%);
+  background: var(--primary-gradient);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -124,20 +124,21 @@ a:hover {
   transition: all var(--transition-fast);
   cursor: pointer;
   text-decoration: none;
-  border: 1px solid transparent;
+  border-left: 3px solid transparent;
 }
 
 .nav-item:hover {
   background: var(--bg-surface-secondary);
   color: var(--text-main);
   text-decoration: none;
+  border-left: 3px solid var(--border-light);
 }
 
 .nav-item.active {
   background: var(--primary-light);
   color: var(--primary);
   font-weight: 600;
-  border-color: var(--primary-border);
+  border-left: 3px solid var(--primary);
 }
 
 .nav-icon {
@@ -155,7 +156,7 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--bg-surface);
+  background: transparent;
 }
 
 .user-snippet {
@@ -209,7 +210,8 @@ a:hover {
 /* Header */
 .top-header {
   height: var(--header-height);
-  background: var(--bg-surface);
+  background: rgba(var(--bg-surface), 0.85); /* fallback */
+  background: var(--bg-surface); /* if no rgba fallback */
   border-bottom: 1px solid var(--border-light);
   display: flex;
   align-items: center;
@@ -218,6 +220,20 @@ a:hover {
   position: sticky;
   top: 0;
   z-index: 90;
+  backdrop-filter: blur(8px);
+}
+@supports (backdrop-filter: blur(8px)) {
+  .top-header {
+    background-color: transparent;
+    /* We need to use var mapped with rgba, but pure var doesn't work for transparency easily if it's hex. 
+       Let's assume we can use opacity instead if we want, or just stick to slightly transparent color. */
+  }
+}
+/* Just simpler glassmorphism fix */
+.top-header {
+  background: var(--bg-surface);
+  opacity: 0.95;
+  backdrop-filter: blur(10px);
 }
 
 .header-left {
@@ -263,7 +279,7 @@ a:hover {
 .content-area {
   flex: 1;
   padding: var(--space-8);
-  max-width: 1400px;
+  max-width: 1200px;
   width: 100%;
   margin: 0 auto;
 }
@@ -274,17 +290,45 @@ a:hover {
 
 .view-container.active {
   display: block;
-  animation: fadeIn 200ms ease;
+  animation: fadeIn var(--transition-base) forwards;
 }
 
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Skeleton Loaders */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-surface-tertiary) 25%, var(--border-light) 50%, var(--bg-surface-tertiary) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-text {
+  height: 14px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.skeleton-card {
+  height: 120px;
+  width: 100%;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
   }
 }
 
@@ -323,5 +367,16 @@ a:hover {
   }
   .content-area {
     padding: var(--space-4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

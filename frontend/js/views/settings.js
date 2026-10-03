@@ -5,6 +5,7 @@
 import { API } from "../api.js";
 import { Auth } from "../auth.js";
 import { escapeHtml, showToast } from "../utils.js";
+import { ThemeManager } from "../app.js";
 
 export const SettingsView = {
   container: null,
@@ -27,6 +28,25 @@ export const SettingsView = {
           <div class="card-body">
             <div id="settings-profile-container">
               <div style="color:var(--text-muted);">Loading profile information...</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Appearance -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">🎨 Appearance</span>
+          </div>
+          <div class="card-body">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <strong style="display:block; margin-bottom:4px;">Theme</strong>
+                <span style="font-size:13px; color:var(--text-secondary);">Switch between light and dark mode</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span id="theme-label" style="font-size:13.5px; font-weight:500;"></span>
+                <button id="settings-theme-toggle" class="btn btn-secondary">Toggle Theme</button>
+              </div>
             </div>
           </div>
         </div>
@@ -68,6 +88,20 @@ export const SettingsView = {
       if (confirm("Are you sure you want to sign out?")) {
         Auth.logout();
       }
+    });
+
+    const updateThemeLabel = () => {
+      const label = document.getElementById("theme-label");
+      if (label) {
+        label.textContent = ThemeManager.getTheme() === 'dark' ? 'Dark Mode' : 'Light Mode';
+      }
+    };
+    
+    updateThemeLabel();
+    
+    document.getElementById("settings-theme-toggle")?.addEventListener("click", () => {
+      ThemeManager.toggle();
+      updateThemeLabel();
     });
   },
 

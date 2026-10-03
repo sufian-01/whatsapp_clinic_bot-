@@ -6,8 +6,112 @@ import { Auth } from "./auth.js";
 
 const BASE_URL = "/api/admin";
 
+const inflightGetRequests = new Map();
+
+async function executeRequest(url, options, token) {
+  const headers = {
+    "Accept": "application/json",
+    ...options.headers,
+  };
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  let body = options.body;
+  if (body && typeof body === "object" && !(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(body);
+  }
+
+  // Timeout & cancellation handling (default: 15s)
+  const timeoutMs = options.timeout !== undefined ? options.timeout : 15000;
+  const controller = new AbortController();
+  let timedOut = false;
+  let timerId = null;
+
+  if (timeoutMs > 0) {
+    timerId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  // Chain caller signal if provided
+  if (options.signal) {
+    if (options.signal.aborted) {
+      if (timerId) clearTimeout(timerId);
+      throw new DOMException("Request was cancelled", "AbortError");
+    }
+    options.signal.addEventListener("abort", () => {
+      controller.abort(options.signal.reason);
+    }, { once: true });
+  }
+
+  try {
+    const fetchOptions = {
+      ...options,
+      headers,
+      body,
+      signal: controller.signal,
+    };
+    delete fetchOptions.params;
+    delete fetchOptions.timeout;
+    delete fetchOptions.noDedupe;
+
+    const response = await fetch(url.toString(), fetchOptions);
+
+    if (response.status === 401) {
+      Auth.clearSession();
+      if (!window.location.pathname.includes("login.html")) {
+        window.location.href = "/admin/login.html";
+      }
+      throw new Error("Session expired. Please log in again.");
+    }
+
+    let data;
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      data = await response.json();
+    } else {
+      data = await response.text();
+    }
+
+    if (!response.ok) {
+      let errorMsg = "An unexpected error occurred.";
+      if (data && data.detail) {
+        if (Array.isArray(data.detail)) {
+          errorMsg = data.detail.map((d) => d.msg || JSON.stringify(d)).join(", ");
+        } else {
+          errorMsg = data.detail;
+        }
+      } else if (typeof data === "string") {
+        errorMsg = data;
+      }
+      const err = new Error(errorMsg);
+      err.status = response.status;
+      err.data = data;
+      throw err;
+    }
+
+    return data;
+  } catch (err) {
+    if (timedOut) {
+      const timeoutErr = new Error("Request timed out. Please check your connection and try again.");
+      timeoutErr.name = "TimeoutError";
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    if (timerId) {
+      clearTimeout(timerId);
+    }
+  }
+}
+
 async function request(path, options = {}) {
-  const url = new URL(BASE_URL + path, window.location.origin);
+  const prefix = (path.startsWith("/doctor/") || path === "/doctor") ? "/api" : BASE_URL;
+  const url = new URL(prefix + path, window.location.origin);
   if (options.params) {
     Object.entries(options.params).forEach(([k, v]) => {
       if (v !== undefined && v !== null && v !== "") {
@@ -16,61 +120,26 @@ async function request(path, options = {}) {
     });
   }
 
-  const headers = {
-    "Accept": "application/json",
-    ...options.headers,
-  };
-
   const token = Auth.getToken();
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  const method = (options.method || "GET").toUpperCase();
 
-  if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-    options.body = JSON.stringify(options.body);
-  }
-
-  const response = await fetch(url.toString(), {
-    ...options,
-    headers,
-  });
-
-  if (response.status === 401) {
-    // Session expired or invalid
-    Auth.clearSession();
-    if (!window.location.pathname.includes("login.html")) {
-      window.location.href = "/admin/login.html";
+  // In-flight GET request deduplication
+  const isGet = method === "GET";
+  if (isGet && !options.noDedupe) {
+    const dedupeKey = `${url.toString()}|${token || ""}`;
+    if (inflightGetRequests.has(dedupeKey)) {
+      return inflightGetRequests.get(dedupeKey);
     }
-    throw new Error("Session expired. Please log in again.");
+
+    const reqPromise = executeRequest(url, options, token).finally(() => {
+      inflightGetRequests.delete(dedupeKey);
+    });
+
+    inflightGetRequests.set(dedupeKey, reqPromise);
+    return reqPromise;
   }
 
-  let data;
-  const contentType = response.headers.get("content-type");
-  if (contentType && contentType.includes("application/json")) {
-    data = await response.json();
-  } else {
-    data = await response.text();
-  }
-
-  if (!response.ok) {
-    let errorMsg = "An unexpected error occurred.";
-    if (data && data.detail) {
-      if (Array.isArray(data.detail)) {
-        errorMsg = data.detail.map((d) => d.msg || JSON.stringify(d)).join(", ");
-      } else {
-        errorMsg = data.detail;
-      }
-    } else if (typeof data === "string") {
-      errorMsg = data;
-    }
-    const err = new Error(errorMsg);
-    err.status = response.status;
-    err.data = data;
-    throw err;
-  }
-
-  return data;
+  return executeRequest(url, options, token);
 }
 
 export const API = {
@@ -104,8 +173,8 @@ export const API = {
   },
 
   // Patients
-  async listPatients(params = {}) {
-    return request("/patients", { params });
+  async listPatients(params = {}, options = {}) {
+    return request("/patients", { params, ...options });
   },
 
   async getPatient(patientId) {
@@ -135,8 +204,8 @@ export const API = {
   },
 
   // Doctors
-  async listDoctors(params = {}) {
-    return request("/doctors", { params });
+  async listDoctors(params = {}, options = {}) {
+    return request("/doctors", { params, ...options });
   },
 
   async getDoctor(doctorId) {
@@ -171,8 +240,8 @@ export const API = {
   },
 
   // Appointments
-  async listAppointments(params = {}) {
-    return request("/appointments", { params });
+  async listAppointments(params = {}, options = {}) {
+    return request("/appointments", { params, ...options });
   },
 
   async getAppointment(appointmentId) {
@@ -208,8 +277,8 @@ export const API = {
   },
 
   // Slots
-  async listSlots(params = {}) {
-    return request("/slots", { params });
+  async listSlots(params = {}, options = {}) {
+    return request("/slots", { params, ...options });
   },
 
   async createSlot(payload) {
@@ -234,8 +303,8 @@ export const API = {
   },
 
   // Payments
-  async listPayments(params = {}) {
-    return request("/payments", { params });
+  async listPayments(params = {}, options = {}) {
+    return request("/payments", { params, ...options });
   },
 
   async getPayment(paymentId) {
@@ -310,6 +379,152 @@ export const API = {
   // Audit Logs
   async getAuditLogs(params = {}) {
     return request("/audit-logs", { params });
+  },
+
+  // Auth: Change Password
+  async changePassword(oldPassword, newPassword) {
+    return request("/auth/change-password", {
+      method: "POST",
+      body: { old_password: oldPassword, new_password: newPassword },
+    });
+  },
+
+  // Admin: Doctor Accounts Management
+  async getDoctorAccounts() {
+    return request("/doctor-accounts");
+  },
+
+  async createDoctorAccount(payload) {
+    return request("/doctor-accounts", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async getDoctorAccount(username) {
+    return request(`/doctor-accounts/${encodeURIComponent(username)}`);
+  },
+
+  async updateDoctorAccount(username, payload) {
+    return request(`/doctor-accounts/${encodeURIComponent(username)}`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  async setDoctorAccountStatus(username, status) {
+    return request(`/doctor-accounts/${encodeURIComponent(username)}/status`, {
+      method: "PATCH",
+      body: { status },
+    });
+  },
+
+  async resetDoctorPassword(username, newPassword) {
+    return request(`/doctor-accounts/${encodeURIComponent(username)}/reset-password`, {
+      method: "POST",
+      body: { new_password: newPassword },
+    });
+  },
+
+  // Admin: Prescriptions Oversight
+  async getAdminPrescriptions(params = {}, options = {}) {
+    return request("/prescriptions", { params, ...options });
+  },
+
+  async getAdminPrescription(id) {
+    return request(`/prescriptions/${encodeURIComponent(id)}`);
+  },
+
+  getAdminPrescriptionPdfUrl(id) {
+    return `${BASE_URL}/prescriptions/${encodeURIComponent(id)}/pdf`;
+  },
+
+  // Doctor Portal Methods
+  async getDoctorProfile() {
+    return request("/doctor/profile");
+  },
+
+  async getDoctorDashboard(today, options = {}) {
+    return request("/doctor/dashboard", { params: { today }, ...options });
+  },
+
+  async getDoctorAppointments(params = {}, options = {}) {
+    return request("/doctor/appointments", { params, ...options });
+  },
+
+  async getDoctorAppointment(id) {
+    return request(`/doctor/appointments/${encodeURIComponent(id)}`);
+  },
+
+  async getDoctorPatients(params = {}, options = {}) {
+    return request("/doctor/patients", { params, ...options });
+  },
+
+  async getDoctorPatientDetail(id) {
+    return request(`/doctor/patients/${encodeURIComponent(id)}`);
+  },
+
+  async getDoctorSlots(params = {}, options = {}) {
+    return request("/doctor/slots", { params, ...options });
+  },
+
+  async createDoctorSlot(payload) {
+    return request("/doctor/slots", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async updateDoctorSlot(slotId, payload) {
+    return request(`/doctor/slots/${encodeURIComponent(slotId)}`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  async deleteDoctorSlot(slotId) {
+    return request(`/doctor/slots/${encodeURIComponent(slotId)}`, {
+      method: "DELETE",
+    });
+  },
+
+  async getDoctorPrescriptions(params = {}, options = {}) {
+    return request("/doctor/prescriptions", { params, ...options });
+  },
+
+  async savePrescriptionDraft(payload) {
+    return request("/doctor/prescriptions", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async getDoctorPrescription(id) {
+    return request(`/doctor/prescriptions/${encodeURIComponent(id)}`);
+  },
+
+  async finalizePrescription(id) {
+    return request(`/doctor/prescriptions/${encodeURIComponent(id)}/finalize`, {
+      method: "POST",
+    });
+  },
+
+  async amendPrescription(id, payload) {
+    return request(`/doctor/prescriptions/${encodeURIComponent(id)}/amend`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  getDoctorPrescriptionPdfUrl(id) {
+    return `/api/doctor/prescriptions/${encodeURIComponent(id)}/pdf`;
+  },
+
+  async emailPrescription(id, recipientEmail = "", recipientType = "patient") {
+    return request(`/doctor/prescriptions/${encodeURIComponent(id)}/email`, {
+      method: "POST",
+      body: { recipient_email: recipientEmail, recipient_type: recipientType },
+    });
   },
 };
 

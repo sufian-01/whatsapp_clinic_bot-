@@ -1,14 +1,19 @@
 """FastAPI application factory."""
 
+from collections import deque
+import logging
 from pathlib import Path
+import time
+import uuid
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.admin import create_admin_router
 from .api.knowledge import create_knowledge_router
 from .api.webhook import create_webhook_router
+from .core.auth import get_current_admin
 from .core.config import get_settings, validate_settings
 from .core.logging import configure_logging
 from .graph.graph import build_graph
@@ -109,8 +114,10 @@ def create_app() -> FastAPI:
         slots_tools=slot_tools,
         payments_tools=payment_tools,
         invoices_tools=invoice_tools,
+        gmail_tools=gmail_tools,
         clinic_name=settings.clinic_name,
         clinic_timezone=settings.clinic_timezone,
+        support_phone=settings.support_phone,
     )
 
     graph = build_graph(GraphNodes(
@@ -132,12 +139,59 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title=f"{settings.clinic_name} AI Assistant & CRM")
 
+    perf_logger = logging.getLogger("crm.perf")
+    perf_history = deque(maxlen=200)
+    app_start_time = time.time()
+
+    @app.middleware("http")
+    async def performance_logging_middleware(request: Request, call_next):
+        req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+        start_time = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        response.headers["X-Process-Time"] = f"{duration_ms}ms"
+        response.headers["X-Request-ID"] = req_id
+
+        path = request.url.path
+        if path.startswith("/api") or path.startswith("/admin"):
+            perf_logger.info(
+                f"[PERF] id={req_id} method={request.method} path={path} status={response.status_code} duration_ms={duration_ms}"
+            )
+            perf_history.append({
+                "id": req_id,
+                "time": time.time(),
+                "method": request.method,
+                "path": path,
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+            })
+        return response
+
+    @app.get("/api/admin/perf-stats", include_in_schema=False)
+    async def get_perf_stats(current_admin: dict = Depends(get_current_admin)):
+        """Development inspection of recent endpoint latencies."""
+        entries = list(perf_history)
+        if not entries:
+            return {"count": 0, "avg_duration_ms": 0.0, "p95_duration_ms": 0.0, "recent": []}
+        avg_dur = round(sum(e["duration_ms"] for e in entries) / len(entries), 2)
+        durations = sorted(e["duration_ms"] for e in entries)
+        p95_idx = int(len(durations) * 0.95)
+        p95_dur = durations[min(p95_idx, len(durations) - 1)]
+        return {
+            "count": len(entries),
+            "avg_duration_ms": avg_dur,
+            "p95_duration_ms": p95_dur,
+            "recent": entries[-20:],
+        }
+
     # 1. Existing Webhook & Knowledge Routers
     app.include_router(create_webhook_router(settings, graph, bot, sarvam))
     app.include_router(create_knowledge_router(settings.knowledge_dir / "uploads", rag))
 
     # 2. CRM Admin Service & API Router
+    from .api.doctor import create_doctor_router
     app.include_router(create_admin_router(crm_service, settings))
+    app.include_router(create_doctor_router(crm_service, settings))
 
     # 3. Mount CRM Frontend static files
     frontend_dir = ROOT_DIR / "frontend"
@@ -149,8 +203,24 @@ def create_app() -> FastAPI:
         app.mount("/admin", StaticFiles(directory=str(frontend_dir), html=True), name="admin")
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(details: bool = False) -> dict:
+        data = {"status": "ok"}
+        if details:
+            data.update({
+                "uptime_seconds": round(time.time() - app_start_time, 1),
+                "clinic": settings.clinic_name,
+                "rag_available": rag.is_available(),
+            })
+            try:
+                import shutil
+                total, used, free = shutil.disk_usage(".")
+                data["storage"] = {
+                    "free_gb": round(free / (1024**3), 2),
+                    "total_gb": round(total / (1024**3), 2),
+                }
+            except Exception:
+                pass
+        return data
 
     return app
 

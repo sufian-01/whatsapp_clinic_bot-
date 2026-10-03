@@ -9,14 +9,20 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from ..core.auth import (
+    check_account_lockout,
+    clear_failed_login,
     create_session,
     get_current_admin,
+    get_current_doctor,
+    get_current_user,
     hash_password,
+    record_failed_login,
     revoke_session,
     verify_password,
 )
 from ..core.config import Settings
 from ..services.crm_service import CrmService
+from .doctor import create_doctor_router
 
 
 # ---------------------------------------------------------------------------
@@ -33,12 +39,40 @@ class LoginResponse(BaseModel):
     username: str
     role: str
     clinic_name: str
+    doctor_id: Optional[str] = None
+    doctor_name: Optional[str] = None
+    must_change_password: bool = False
 
 
 class AdminProfile(BaseModel):
     username: str
     role: str
     clinic_name: str
+    doctor_id: Optional[str] = None
+    doctor_name: Optional[str] = None
+    must_change_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=1)
+
+
+class DoctorAccountCreateRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=1)
+    doctor_id: str = Field(..., min_length=1)
+    email: Optional[str] = ""
+
+
+class DoctorAccountUpdateRequest(BaseModel):
+    doctor_id: Optional[str] = None
+    email: Optional[str] = None
+    status: Optional[str] = None
+
+
+class DoctorAccountResetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=1)
 
 
 class PatientCreateRequest(BaseModel):
@@ -68,6 +102,8 @@ class PatientUpdateRequest(BaseModel):
 class DoctorCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=150)
     specialization: str = Field(..., min_length=1, max_length=150)
+    qualification: Optional[str] = ""
+    registration_number: Optional[str] = ""
     available_days: Optional[str] = "Monday, Wednesday, Friday"
     start_time: Optional[str] = "10:00 AM"
     end_time: Optional[str] = "1:00 PM"
@@ -78,6 +114,8 @@ class DoctorCreateRequest(BaseModel):
 class DoctorUpdateRequest(BaseModel):
     name: Optional[str] = None
     specialization: Optional[str] = None
+    qualification: Optional[str] = None
+    registration_number: Optional[str] = None
     available_days: Optional[str] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
@@ -150,7 +188,16 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
 
     @router.post("/auth/login", response_model=LoginResponse)
     async def login(credentials: LoginRequest, response: Response):
-        """Authenticate admin user and issue a secure session token."""
+        """Authenticate admin or doctor user with account lockout protections."""
+        # 1. Check account lockout
+        is_locked, secs = check_account_lockout(credentials.username)
+        if is_locked:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Account is temporarily locked due to multiple failed login attempts. Try again in {secs} seconds.",
+            )
+
+        # 2. Check Admin Credentials
         expected_user = settings.crm_admin_username or "admin"
         username_match = credentials.username.strip().casefold() == expected_user.casefold()
 
@@ -160,51 +207,116 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
         elif settings.crm_admin_password:
             password_valid = credentials.password == settings.crm_admin_password
 
-        if not (username_match and password_valid):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid username or password",
-                headers={"WWW-Authenticate": "Bearer"},
+        if username_match and password_valid:
+            clear_failed_login(credentials.username)
+            token = create_session(
+                username=expected_user,
+                role="admin",
+                expires_hours=settings.crm_token_expire_hours,
+            )
+            response.set_cookie(
+                key="admin_session",
+                value=token,
+                httponly=True,
+                samesite="lax",
+                max_age=settings.crm_token_expire_hours * 3600,
+            )
+            return LoginResponse(
+                token=token,
+                username=expected_user,
+                role="admin",
+                clinic_name=settings.clinic_name,
+                doctor_id=None,
+                doctor_name=None,
+                must_change_password=False,
             )
 
-        token = create_session(
-            username=expected_user,
-            role="admin",
-            expires_hours=settings.crm_token_expire_hours,
-        )
+        # 3. Check Doctor Credentials
+        if crm.doctor_accounts:
+            doc_account = crm.doctor_accounts.authenticate(credentials.username, credentials.password)
+            if doc_account:
+                clear_failed_login(credentials.username)
+                token = create_session(
+                    username=doc_account["username"],
+                    role="doctor",
+                    expires_hours=settings.crm_token_expire_hours,
+                    doctor_id=doc_account.get("doctor_id", ""),
+                    doctor_name=doc_account.get("doctor_name", ""),
+                    must_change_password=doc_account.get("must_change_password", False),
+                )
+                response.set_cookie(
+                    key="admin_session",
+                    value=token,
+                    httponly=True,
+                    samesite="lax",
+                    max_age=settings.crm_token_expire_hours * 3600,
+                )
+                return LoginResponse(
+                    token=token,
+                    username=doc_account["username"],
+                    role="doctor",
+                    clinic_name=settings.clinic_name,
+                    doctor_id=doc_account.get("doctor_id"),
+                    doctor_name=doc_account.get("doctor_name"),
+                    must_change_password=doc_account.get("must_change_password", False),
+                )
 
-        response.set_cookie(
-            key="admin_session",
-            value=token,
-            httponly=True,
-            samesite="lax",
-            max_age=settings.crm_token_expire_hours * 3600,
-        )
+        # 4. Record Failure & Apply Lockout
+        is_now_locked, left = record_failed_login(credentials.username)
+        if is_now_locked:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts. Account is locked for 15 minutes.",
+            )
 
-        return LoginResponse(
-            token=token,
-            username=expected_user,
-            role="admin",
-            clinic_name=settings.clinic_name,
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid username or password. {left} attempts remaining before lockout.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     @router.post("/auth/logout")
-    async def logout(response: Response, current_admin: dict = Depends(get_current_admin)):
-        """Revoke current admin session."""
-        token = current_admin.get("token")
+    async def logout(response: Response, current_user: dict = Depends(get_current_user)):
+        """Revoke current user session."""
+        token = current_user.get("token")
         if token:
             revoke_session(token)
         response.delete_cookie(key="admin_session")
         return {"success": True, "message": "Logged out successfully"}
 
     @router.get("/auth/me", response_model=AdminProfile)
-    async def me(current_admin: dict = Depends(get_current_admin)):
-        """Return authenticated admin profile."""
+    async def me(current_user: dict = Depends(get_current_user)):
+        """Return authenticated user profile."""
         return AdminProfile(
-            username=current_admin.get("username", "admin"),
-            role=current_admin.get("role", "admin"),
+            username=current_user.get("username", "admin"),
+            role=current_user.get("role", "admin"),
             clinic_name=settings.clinic_name,
+            doctor_id=current_user.get("doctor_id"),
+            doctor_name=current_user.get("doctor_name"),
+            must_change_password=current_user.get("must_change_password", False),
         )
+
+    @router.post("/auth/change-password")
+    async def change_password(
+        payload: ChangePasswordRequest,
+        current_user: dict = Depends(get_current_user),
+    ):
+        """Update authenticated user password."""
+        username = current_user.get("username")
+        role = current_user.get("role")
+        if role == "doctor":
+            if not crm.doctor_accounts:
+                raise HTTPException(status_code=500, detail="Doctor account service unavailable.")
+            try:
+                crm.doctor_accounts.change_password(username, payload.old_password, payload.new_password)
+                return {"success": True, "message": "Password changed successfully."}
+            except ValueError as err:
+                raise HTTPException(status_code=400, detail=str(err))
+        elif role == "admin":
+            if payload.old_password != settings.crm_admin_password:
+                raise HTTPException(status_code=400, detail="Incorrect current administrator password.")
+            return {"success": True, "message": "Password verified successfully."}
+        raise HTTPException(status_code=400, detail="Unsupported user role.")
 
     # -----------------------------------------------------------------------
     # DASHBOARD & ANALYTICS
@@ -826,4 +938,182 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to fetch audit logs: {err}")
 
+    # -----------------------------------------------------------------------
+    # DOCTOR ACCOUNTS MANAGEMENT (ADMIN ONLY)
+    # -----------------------------------------------------------------------
+
+    @router.get("/doctor-accounts")
+    async def list_doctor_accounts(current_admin: dict = Depends(get_current_admin)):
+        """List all registered doctor accounts without password hashes."""
+        if not crm.doctor_accounts:
+            return []
+        return crm.doctor_accounts.list_accounts()
+
+    @router.post("/doctor-accounts", status_code=status.HTTP_201_CREATED)
+    async def create_doctor_account(
+        payload: DoctorAccountCreateRequest,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Register a new doctor login account linked to an existing Doctor Directory record."""
+        if not crm.doctor_accounts:
+            raise HTTPException(status_code=500, detail="Doctor account service unavailable.")
+        try:
+            return crm.doctor_accounts.create_account(
+                username=payload.username,
+                password=payload.password,
+                doctor_id=payload.doctor_id,
+                email=payload.email or "",
+                admin_user=current_admin.get("username", "admin"),
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to create doctor account: {err}")
+
+    @router.get("/doctor-accounts/{username}")
+    async def get_doctor_account(
+        username: str,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Get details of a specific doctor account."""
+        if not crm.doctor_accounts:
+            raise HTTPException(status_code=500, detail="Doctor account service unavailable.")
+        acc = crm.doctor_accounts.get_account(username)
+        if not acc:
+            raise HTTPException(status_code=404, detail=f"Doctor account '{username}' not found.")
+        return acc
+
+    @router.patch("/doctor-accounts/{username}")
+    async def update_doctor_account(
+        username: str,
+        payload: DoctorAccountUpdateRequest,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Update doctor account details."""
+        if not crm.doctor_accounts:
+            raise HTTPException(status_code=500, detail="Doctor account service unavailable.")
+        updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+        try:
+            return crm.doctor_accounts.update_account(
+                username=username,
+                updates=updates,
+                admin_user=current_admin.get("username", "admin"),
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to update doctor account: {err}")
+
+    @router.patch("/doctor-accounts/{username}/status")
+    async def set_doctor_account_status(
+        username: str,
+        payload: StatusUpdateRequest,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Activate or deactivate a doctor account without data loss."""
+        if not crm.doctor_accounts:
+            raise HTTPException(status_code=500, detail="Doctor account service unavailable.")
+        try:
+            return crm.doctor_accounts.set_status(
+                username=username,
+                status=payload.status,
+                admin_user=current_admin.get("username", "admin"),
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to update doctor account status: {err}")
+
+    @router.post("/doctor-accounts/{username}/reset-password")
+    async def reset_doctor_password(
+        username: str,
+        payload: DoctorAccountResetPasswordRequest,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Administrator resets doctor password. Compulsory password change is re-armed."""
+        if not crm.doctor_accounts:
+            raise HTTPException(status_code=500, detail="Doctor account service unavailable.")
+        try:
+            return crm.doctor_accounts.reset_password(
+                username=username,
+                new_password=payload.new_password,
+                admin_user=current_admin.get("username", "admin"),
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to reset doctor password: {err}")
+
+    # -----------------------------------------------------------------------
+    # PRESCRIPTIONS OVERSIGHT (ADMIN)
+    # -----------------------------------------------------------------------
+
+    @router.get("/prescriptions")
+    async def admin_list_prescriptions(
+        doctor_id: Optional[str] = None,
+        patient_id: Optional[str] = None,
+        appointment_id: Optional[str] = None,
+        status: Optional[str] = None,
+        date: Optional[str] = None,
+        search: Optional[str] = None,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Admin overview of all prescriptions across the clinic."""
+        if not crm.prescriptions:
+            return []
+        try:
+            return crm.prescriptions.list_prescriptions(
+                doctor_id=doctor_id,
+                patient_id=patient_id,
+                appointment_id=appointment_id,
+                status=status,
+                date_filter=date,
+                search=search,
+            )
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to list prescriptions: {err}")
+
+    @router.get("/prescriptions/{prescription_id}")
+    async def admin_get_prescription(
+        prescription_id: str,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Admin view of a specific prescription with version history."""
+        if not crm.prescriptions:
+            raise HTTPException(status_code=404, detail="Prescription not found.")
+        rx = crm.prescriptions.get_prescription(prescription_id)
+        if not rx:
+            raise HTTPException(status_code=404, detail="Prescription not found.")
+        return rx
+
+    @router.get("/prescriptions/{prescription_id}/pdf")
+    async def admin_download_prescription_pdf(
+        prescription_id: str,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Admin download of prescription PDF."""
+        if not crm.prescriptions:
+            raise HTTPException(status_code=404, detail="Prescription not found.")
+        rx = crm.prescriptions.get_prescription(prescription_id)
+        if not rx:
+            raise HTTPException(status_code=404, detail="Prescription not found.")
+        try:
+            clean_id, pdf_path = crm.prescriptions.generate_pdf_for_prescription(
+                prescription_id=prescription_id,
+                clinic_name=settings.clinic_name,
+                clinic_phone=settings.support_phone,
+            )
+            return FileResponse(
+                path=str(pdf_path),
+                media_type="application/pdf",
+                filename=f"prescription_{prescription_id}_v{rx.get('version', 1)}.pdf",
+            )
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to generate prescription PDF: {err}")
+
+    # Include doctor router under /api/admin/doctor as well
+    doctor_router = create_doctor_router(crm, settings)
+    router.include_router(doctor_router)
+
     return router
+

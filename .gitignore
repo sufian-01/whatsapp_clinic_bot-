@@ -11,6 +11,7 @@ data/knowledge/processed/*
 data/vectorstore/*
 data/invoices/*
 data/audit_logs.jsonl
+data/doctor_demo_credentials.local.json
 
 !data/knowledge/uploads/.gitkeep
 !data/knowledge/processed/.gitkeep

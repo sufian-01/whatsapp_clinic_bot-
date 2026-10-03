@@ -37,6 +37,21 @@ export const Auth = {
     return !!this.getToken();
   },
 
+  isAdmin() {
+    const user = this.getUser();
+    return user && user.role === "admin";
+  },
+
+  isDoctor() {
+    const user = this.getUser();
+    return user && user.role === "doctor";
+  },
+
+  mustChangePassword() {
+    const user = this.getUser();
+    return user && user.must_change_password === true;
+  },
+
   requireAuth() {
     if (!this.isAuthenticated()) {
       window.location.href = "/admin/login.html";

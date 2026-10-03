@@ -5,6 +5,10 @@ class AppointmentTools:
     def __init__(self, repository) -> None:
         self._repository = repository
 
+    def invalidate_cache(self) -> None:
+        if hasattr(self._repository, "invalidate_cache"):
+            self._repository.invalidate_cache()
+
     def list_all_slots(self) -> dict:
         try:
             slots = self._repository.list_all_slots()

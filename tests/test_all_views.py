@@ -8,8 +8,10 @@ VIEWS_TO_TEST = [
     ("dashboard", "view-dashboard"),
     ("appointments", "view-appointments"),
     ("calendar", "view-calendar"),
+    ("prescriptions", "view-prescriptions"),
     ("patients", "view-patients"),
     ("doctors", "view-doctors"),
+    ("doctor-accounts", "view-doctor-accounts"),
     ("slots", "view-slots"),
     ("payments", "view-payments"),
     ("reports", "view-reports"),
@@ -73,6 +75,7 @@ def test_all_crm_views():
         all_passed = all(r[-1] == "PASS" for r in results) and len(page_errors) == 0
         print(f"\nFinal Result: {'ALL VIEWS PASSED' if all_passed else 'SOME VIEWS FAILED'}")
         assert all_passed
+        return all_passed
 
 if __name__ == "__main__":
     success = test_all_crm_views()

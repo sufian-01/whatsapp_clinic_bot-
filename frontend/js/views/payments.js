@@ -3,7 +3,7 @@
  */
 
 import { API } from "../api.js";
-import { debounce, escapeHtml, formatCurrency, formatDate, Modal, renderBadge, showToast } from "../utils.js";
+import { debounce, escapeHtml, formatCurrency, formatDate, Modal, renderBadge, showToast, renderTableSkeletons } from "../utils.js";
 
 export const PaymentsView = {
   container: null,
@@ -12,6 +12,7 @@ export const PaymentsView = {
   currentPage: 1,
   pageSize: 15,
   totalPages: 1,
+  _abortController: null,
 
   async init() {
     this.container = document.getElementById("view-payments");
@@ -58,7 +59,7 @@ export const PaymentsView = {
               </tr>
             </thead>
             <tbody id="payments-table-tbody">
-              <tr><td colspan="9" class="empty-state-cell">Loading payment records...</td></tr>
+              ${renderTableSkeletons(9, 5)}
             </tbody>
           </table>
         </div>
@@ -110,13 +111,20 @@ export const PaymentsView = {
     const tbody = document.getElementById("payments-table-tbody");
     if (!tbody) return;
 
+    if (this._abortController) {
+      this._abortController.abort();
+    }
+    this._abortController = new AbortController();
+
+    tbody.innerHTML = renderTableSkeletons(9, 5);
+
     try {
       const res = await API.listPayments({
         search: this.searchQuery,
         status: this.statusFilter,
         page: this.currentPage,
         page_size: this.pageSize,
-      });
+      }, { signal: this._abortController.signal });
 
       this.totalPages = res.total_pages || 1;
       this.currentPage = res.page || 1;
@@ -193,7 +201,14 @@ export const PaymentsView = {
         });
       });
     } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="9" class="empty-state-cell" style="color:red;">Error: ${escapeHtml(err.message)}</td></tr>`;
+      if (err.name === "AbortError") return;
+      tbody.innerHTML = `<tr><td colspan="9" class="empty-state-cell" style="color:var(--danger,#ef4444); padding:32px 16px;">
+        <div style="font-size:24px; margin-bottom:8px;">⚠️</div>
+        <div style="font-weight:600; margin-bottom:6px;">Failed to load payments</div>
+        <div style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">${escapeHtml(err.message || "Network request failed")}</div>
+        <button id="payments-retry-btn" class="btn btn-secondary btn-sm" style="margin:0 auto;">🔄 Retry Loading</button>
+      </td></tr>`;
+      document.getElementById("payments-retry-btn")?.addEventListener("click", () => this.loadPayments());
       showToast(err.message || "Failed to load payments", "error");
     }
   },

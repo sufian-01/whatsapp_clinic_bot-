@@ -3,7 +3,7 @@
  */
 
 import { API } from "../api.js";
-import { escapeHtml, formatDate, formatTime, Modal, renderBadge, showToast } from "../utils.js";
+import { escapeHtml, formatDate, formatTime, Modal, renderBadge, showToast, renderTableSkeletons } from "../utils.js";
 
 export const SlotsView = {
   container: null,
@@ -11,6 +11,7 @@ export const SlotsView = {
   doctorFilter: "",
   statusFilter: "",
   doctorsList: [],
+  _abortController: null,
 
   async init() {
     this.container = document.getElementById("view-slots");
@@ -62,7 +63,7 @@ export const SlotsView = {
               </tr>
             </thead>
             <tbody id="slots-table-tbody">
-              <tr><td colspan="7" class="empty-state-cell">Loading appointment slots...</td></tr>
+              ${renderTableSkeletons(7, 5)}
             </tbody>
           </table>
         </div>
@@ -123,12 +124,19 @@ export const SlotsView = {
     const tbody = document.getElementById("slots-table-tbody");
     if (!tbody) return;
 
+    if (this._abortController) {
+      this._abortController.abort();
+    }
+    this._abortController = new AbortController();
+
+    tbody.innerHTML = renderTableSkeletons(7, 5);
+
     try {
       const slots = await API.listSlots({
         date: this.dateFilter,
         doctor: this.doctorFilter,
         status: this.statusFilter,
-      });
+      }, { signal: this._abortController.signal });
 
       if (!slots || slots.length === 0) {
         tbody.innerHTML = `<tr><td colspan="7" class="empty-state-cell">No slots found matching criteria.</td></tr>`;
@@ -179,7 +187,14 @@ export const SlotsView = {
         });
       });
     } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="7" class="empty-state-cell" style="color:red;">Error: ${escapeHtml(err.message)}</td></tr>`;
+      if (err.name === "AbortError") return;
+      tbody.innerHTML = `<tr><td colspan="7" class="empty-state-cell" style="color:var(--danger,#ef4444); padding:32px 16px;">
+        <div style="font-size:24px; margin-bottom:8px;">⚠️</div>
+        <div style="font-weight:600; margin-bottom:6px;">Failed to load slots</div>
+        <div style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">${escapeHtml(err.message || "Network request failed")}</div>
+        <button id="slots-retry-btn" class="btn btn-secondary btn-sm" style="margin:0 auto;">🔄 Retry Loading</button>
+      </td></tr>`;
+      document.getElementById("slots-retry-btn")?.addEventListener("click", () => this.loadSlots());
       showToast(err.message || "Failed to load slots", "error");
     }
   },

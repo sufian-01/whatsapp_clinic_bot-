@@ -1,0 +1,28 @@
+{
+  "dr_arjun_api": {
+    "username": "dr_arjun_api",
+    "password_hash": "pbkdf2:sha256:100000$1fcda9a524c63d52e10bc7c49fcdcb60$61f6fc7afe16a7c6f0af396a3ac74427e44fc4312dc6c9d9682479d266a219fc",
+    "doctor_id": "DOC001",
+    "doctor_name": "Dr. Arjun Mehta",
+    "specialization": "General Physician",
+    "email": "dr.arjun@test.com",
+    "status": "Active",
+    "must_change_password": true,
+    "created_at": "2026-10-02T10:42:47.763185+00:00",
+    "updated_at": "2026-10-02T10:42:47.763185+00:00",
+    "last_login": "2026-10-02T12:15:44.016316+00:00"
+  },
+  "dr_sufian": {
+    "username": "dr_sufian",
+    "password_hash": "pbkdf2:sha256:100000$f4006a8b2fc21a66dffb410285a01d9d$56d6a191fba0dbb520b4e119fa117ad94d402aeeb27873040368dfd798a11175",
+    "doctor_id": "DOC003",
+    "doctor_name": "Dr. sufian",
+    "specialization": "Cardiologist",
+    "email": "dr.sufian@clinic.com",
+    "status": "Active",
+    "must_change_password": true,
+    "created_at": "2026-10-02T11:34:41.436192+00:00",
+    "updated_at": "2026-10-02T11:34:41.436192+00:00",
+    "last_login": "2026-10-03T08:25:18.357696+00:00"
+  }
+}

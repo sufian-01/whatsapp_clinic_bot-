@@ -3,7 +3,7 @@
 /* -------------------------------------------------------------------------
    1. Dashboard View
    ------------------------------------------------------------------------- */
-.metrics-grid {
+.metrics-grid, .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--space-4);
@@ -13,13 +13,19 @@
 .metric-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-light);
+  border-top: 4px solid var(--primary);
   border-radius: var(--radius-lg);
   padding: var(--space-5);
-  box-shadow: var(--shadow-xs);
+  box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
   position: relative;
   overflow: hidden;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 .metric-card-header {
@@ -38,23 +44,24 @@
 }
 
 .metric-icon-wrap {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--radius-md);
   background: var(--primary-light);
   color: var(--primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .metric-value {
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-main);
   letter-spacing: -0.5px;
   line-height: 1.1;
+  margin-top: var(--space-2);
 }
 
 .metric-subtext {
@@ -65,7 +72,7 @@
 
 .dashboard-split-layout {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: 2fr 1.2fr;
   gap: var(--space-6);
 }
 
@@ -172,7 +179,7 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
-  background: #f8fafc;
+  background: var(--bg-surface-secondary);
   border-bottom: 1px solid var(--border-light);
   border-right: 1px solid var(--border-light);
 }
@@ -198,12 +205,12 @@
 }
 
 .calendar-cell.other-month {
-  background: #fafafa;
+  background: var(--bg-surface-secondary);
   color: var(--text-muted);
 }
 
 .calendar-cell.today {
-  background: #f0f7ff;
+  background: var(--primary-light);
 }
 
 .calendar-day-number {
@@ -250,15 +257,15 @@
 }
 
 .calendar-event-pill.status-completed {
-  background: #ecfdf5;
-  color: #065f46;
-  border-left-color: #10b981;
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-left-color: var(--success-text);
 }
 
 .calendar-event-pill.status-pending {
-  background: #fffbeb;
-  color: #92400e;
-  border-left-color: #f59e0b;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border-left-color: var(--warning-text);
 }
 
 /* -------------------------------------------------------------------------
@@ -340,7 +347,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at top, #eff6ff 0%, var(--bg-app) 100%);
+  background: var(--bg-app);
+  background-image: radial-gradient(circle at center, var(--primary-light) 0%, var(--bg-app) 100%);
   padding: var(--space-4);
 }
 
@@ -348,10 +356,11 @@
   background: var(--bg-surface);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-xl);
   width: 100%;
   max-width: 420px;
   padding: var(--space-8);
+  backdrop-filter: blur(10px);
 }
 
 .login-brand {
@@ -402,4 +411,115 @@
   margin-top: var(--space-6);
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* =========================================================================
+   PRESCRIPTION PAD & EDITOR STYLES
+   ========================================================================= */
+.rx-inline-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed #94a3b8;
+  padding: 2px 4px;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  outline: none;
+}
+
+.rx-inline-input:focus {
+  border-bottom: 1.5px solid #0284c7;
+  background: #f0f9ff;
+}
+
+.rx-compact-input {
+  padding: 4px 8px;
+  font-size: 12px;
+  height: auto;
+}
+
+.rx-format-btn {
+  background: transparent;
+  border: none;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #334155;
+}
+
+.rx-format-btn:hover {
+  background: #cbd5e1;
+}
+
+.rx-rich-editor:focus {
+  border-color: #0284c7 !important;
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.15);
+}
+
+/* =========================================================================
+   PRINT MEDIA RULES (Clean A4 Medical Prescription Printout)
+   ========================================================================= */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Hide entire CRM chrome and UI buttons */
+  .sidebar,
+  .top-header,
+  .rx-action-bar,
+  .no-print,
+  .btn,
+  .btn-icon,
+  .toast-container,
+  .modal-backdrop,
+  .menu-toggle-btn,
+  #rx-add-med-row,
+  .remove-rx-med-btn,
+  .rx-editor-toolbar {
+    display: none !important;
+  }
+
+  .main-wrapper,
+  .content-area,
+  .view-container {
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+  }
+
+  /* Ensure only the active prescription pad prints */
+  .prescription-pad {
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 10mm !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+    page-break-inside: avoid;
+  }
+
+  .rx-inline-input {
+    border-bottom: none !important;
+    background: transparent !important;
+  }
+
+  .rx-rich-editor {
+    border: none !important;
+    padding: 0 !important;
+  }
+
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
 }

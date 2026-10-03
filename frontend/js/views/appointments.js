@@ -16,12 +16,26 @@ export const AppointmentsView = {
   currentPage: 1,
   pageSize: 15,
   totalPages: 1,
+  _abortController: null,
 
   async init() {
     this.container = document.getElementById("view-appointments");
     if (!this.container) return;
     this.render();
     await this.loadAppointments();
+  },
+
+  renderTableSkeletons(cols = 9, rows = 6) {
+    let out = "";
+    for (let r = 0; r < rows; r++) {
+      out += "<tr>";
+      for (let c = 0; c < cols; c++) {
+        const width = 45 + Math.floor(Math.random() * 45);
+        out += `<td><div class="skeleton" style="height: 14px; width: ${width}%; border-radius: 4px;"></div></td>`;
+      }
+      out += "</tr>";
+    }
+    return out;
   },
 
   render() {
@@ -75,7 +89,7 @@ export const AppointmentsView = {
               </tr>
             </thead>
             <tbody id="appts-table-tbody">
-              <tr><td colspan="9" class="empty-state-cell">Loading appointments...</td></tr>
+              ${this.renderTableSkeletons(9, 6)}
             </tbody>
           </table>
         </div>
@@ -153,8 +167,15 @@ export const AppointmentsView = {
   },
 
   async loadAppointments() {
+    if (this._abortController) {
+      this._abortController.abort();
+    }
+    this._abortController = new AbortController();
+
     const tbody = document.getElementById("appts-table-tbody");
-    if (!tbody) return;
+    if (tbody) {
+      tbody.innerHTML = this.renderTableSkeletons(9, 6);
+    }
 
     try {
       const res = await API.listAppointments({
@@ -165,7 +186,7 @@ export const AppointmentsView = {
         payment_status: this.paymentStatusFilter,
         page: this.currentPage,
         page_size: this.pageSize,
-      });
+      }, { signal: this._abortController.signal });
 
       this.totalPages = res.total_pages || 1;
       this.currentPage = res.page || 1;
@@ -242,7 +263,16 @@ export const AppointmentsView = {
         });
       });
     } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="9" class="empty-state-cell" style="color:red;">Error: ${escapeHtml(err.message)}</td></tr>`;
+      if (err.name === "AbortError") return;
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="9" class="empty-state-cell" style="padding: 28px; text-align: center; color: var(--danger-text);">
+            <div style="font-weight: 600; margin-bottom: 6px;">⚠️ Unable to load appointments: ${escapeHtml(err.message)}</div>
+            <button id="appts-retry-btn" class="btn btn-secondary btn-sm" style="margin-top: 6px;">🔄 Retry Loading</button>
+          </td>
+        </tr>
+      `;
+      document.getElementById("appts-retry-btn")?.addEventListener("click", () => this.loadAppointments());
       showToast(err.message || "Failed to load appointments", "error");
     }
   },
@@ -469,7 +499,14 @@ export const AppointmentsView = {
 
         try {
           const res = await API.createAppointment(payload);
-          showToast(`Appointment booked successfully! Token: ${res.token_no}`, "success");
+          let msg = `Appointment booked successfully! Token: ${res.token_no}`;
+          if (res.email_result?.email_sent === true) {
+            msg += " ✓ Confirmation email sent";
+          }
+          showToast(msg, "success");
+          if (res.email_result?.email_sent === false && !res.email_result?.skipped) {
+            showToast("⚠️ Booking confirmed but confirmation email could not be sent", "warning");
+          }
           Modal.close();
           window.dispatchEvent(new CustomEvent("crm:appointment-changed"));
           await this.loadAppointments();

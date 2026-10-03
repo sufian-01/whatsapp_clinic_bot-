@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, timezone
 from threading import RLock
+import time
 from typing import Protocol
 
 
@@ -26,25 +27,54 @@ class SlotRepository:
         update_cells: SlotUpdater,
         sheet_range: str,
         append_row: SlotAppender | None = None,
+        cache_ttl_seconds: float = 20.0,
     ) -> None:
         self._read_rows = read_rows
         self._update_cells = update_cells
         self._sheet_range = sheet_range
         self._append_row = append_row
+        self._cache_ttl = cache_ttl_seconds
+        self._cache_lock = RLock()
+        self._cache_time: float = 0.0
+        self._cached_headers: list[str] | None = None
+        self._cached_records: list[dict[str, str]] | None = None
 
-    def _snapshot(self) -> tuple[list[str], list[dict[str, str]]]:
-        rows = self._read_rows()
-        if not rows:
-            return [], []
-        headers = [value.strip() for value in rows[0]]
-        records = []
-        for row_number, row in enumerate(rows[1:], start=2):
-            if any(cell.strip() for cell in row):
-                records.append({
-                    **{header: row[index].strip() if index < len(row) else "" for index, header in enumerate(headers)},
-                    "_row_number": str(row_number),
-                })
-        return headers, records
+    def invalidate_cache(self) -> None:
+        """Invalidate in-memory slot cache."""
+        with self._cache_lock:
+            self._cached_headers = None
+            self._cached_records = None
+            self._cache_time = 0.0
+
+    def _snapshot(self, force_refresh: bool = False) -> tuple[list[str], list[dict[str, str]]]:
+        with self._cache_lock:
+            now = time.monotonic()
+            if not force_refresh and self._cached_records is not None and (now - self._cache_time) < self._cache_ttl:
+                return list(self._cached_headers or []), [dict(r) for r in self._cached_records]
+
+            try:
+                rows = self._read_rows()
+            except Exception:
+                return list(self._cached_headers or []), [dict(r) for r in self._cached_records] if self._cached_records is not None else ([], [])
+
+            if not rows:
+                self._cached_headers = []
+                self._cached_records = []
+                self._cache_time = now
+                return [], []
+
+            headers = [value.strip() for value in rows[0]]
+            records = []
+            for row_number, row in enumerate(rows[1:], start=2):
+                if any(cell.strip() for cell in row):
+                    records.append({
+                        **{header: row[index].strip() if index < len(row) else "" for index, header in enumerate(headers)},
+                        "_row_number": str(row_number),
+                    })
+            self._cached_headers = headers
+            self._cached_records = records
+            self._cache_time = now
+            return list(headers), [dict(r) for r in records]
 
     def list_all_slots(self) -> list[dict[str, str]]:
         """Return all slot records from the sheet."""
@@ -88,8 +118,8 @@ class SlotRepository:
             result.append(record)
         return sorted(result, key=lambda item: (item.get("Date", ""), item.get("Start Time", ""), item.get("Slot ID", "")))
 
-    def get_slot_by_id(self, slot_id: str) -> dict[str, str] | None:
-        _, records = self._snapshot()
+    def get_slot_by_id(self, slot_id: str, force_refresh: bool = False) -> dict[str, str] | None:
+        _, records = self._snapshot(force_refresh=force_refresh)
         return next((record for record in records if record.get("Slot ID") == slot_id), None)
 
     def get_booked_slots(self, doctor: str, date: str) -> list[dict[str, str]]:
@@ -98,7 +128,8 @@ class SlotRepository:
 
     def book_slot(self, slot_id: str, patient_id: str, token_no: str) -> bool:
         with self._booking_lock:
-            headers, records = self._snapshot()
+            # Atomic booking check: MUST force refresh from live sheet!
+            headers, records = self._snapshot(force_refresh=True)
             slot = next((record for record in records if record.get("Slot ID") == slot_id), None)
             if not slot or slot.get("Status", "").casefold() != "available":
                 return False
@@ -111,12 +142,14 @@ class SlotRepository:
             sheet_name = self._sheet_range.split("!", 1)[0]
             last_column = _column_name(len(headers) - 1)
             self._update_cells(f"{sheet_name}!A{row_number}:{last_column}{row_number}", values)
-            verified = self.get_slot_by_id(slot_id)
+            self.invalidate_cache()
+            verified = self.get_slot_by_id(slot_id, force_refresh=True)
             return bool(verified and verified.get("Status", "").casefold() == "booked" and verified.get("Patient ID") == patient_id)
 
     def release_slot_if_needed(self, slot_id: str, patient_id: str | None = None) -> bool:
         with self._booking_lock:
-            headers, records = self._snapshot()
+            # Atomic release check: MUST force refresh from live sheet!
+            headers, records = self._snapshot(force_refresh=True)
             slot = next((record for record in records if record.get("Slot ID") == slot_id), None)
             if not slot or slot.get("Status", "").casefold() != "booked" or (patient_id and slot.get("Patient ID") != patient_id):
                 return False
@@ -128,6 +161,7 @@ class SlotRepository:
             values = [slot.get(header, "") for header in headers]
             sheet_name = self._sheet_range.split("!", 1)[0]
             self._update_cells(f"{sheet_name}!A{row_number}:{_column_name(len(headers) - 1)}{row_number}", values)
+            self.invalidate_cache()
             return True
 
     def find_slot_by_booking(
@@ -197,6 +231,7 @@ class SlotRepository:
         }
         row_values = [slot_record.get(h, "") for h in headers]
         self._append_row(row_values, self._sheet_range)
+        self.invalidate_cache()
         return slot_record
 
     def update_slot(self, slot_id: str, updates: dict[str, str]) -> dict[str, str] | None:
@@ -232,6 +267,7 @@ class SlotRepository:
         values = [slot.get(header, "") for header in headers]
         sheet_name = self._sheet_range.split("!", 1)[0]
         self._update_cells(f"{sheet_name}!A{row_number}:{_column_name(len(headers) - 1)}{row_number}", values)
+        self.invalidate_cache()
         return slot
 
     def set_slot_status(self, slot_id: str, status: str) -> bool:

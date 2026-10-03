@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import RLock
+import time
 from typing import Protocol
 from uuid import uuid4
 
@@ -39,25 +41,62 @@ class PatientRecord:
 
 
 class PatientRepository:
-    def __init__(self, read_rows: RowsReader, append_row: RowAppender, update_cells: CellUpdater, sheet_range: str) -> None:
+    def __init__(
+        self,
+        read_rows: RowsReader,
+        append_row: RowAppender,
+        update_cells: CellUpdater,
+        sheet_range: str,
+        cache_ttl_seconds: float = 20.0,
+    ) -> None:
         self._read_rows = read_rows
         self._append_row = append_row
         self._update_cells = update_cells
         self._sheet_range = sheet_range
+        self._cache_ttl = cache_ttl_seconds
+        self._cache_lock = RLock()
+        self._cache_time: float = 0.0
+        self._cached_rows: list[list[str]] | None = None
+        self._cached_records: list[dict[str, str]] | None = None
 
-    def _rows(self) -> list[list[str]]:
-        return self._read_rows()
+    def invalidate_cache(self) -> None:
+        """Invalidate the in-memory cache to force next read from sheet."""
+        with self._cache_lock:
+            self._cached_rows = None
+            self._cached_records = None
+            self._cache_time = 0.0
 
-    def _records(self) -> list[dict[str, str]]:
-        rows = self._rows()
-        if not rows:
-            return []
-        headers = [header.strip() for header in rows[0]]
-        return [
-            {header: row[index].strip() if index < len(row) else "" for index, header in enumerate(headers)}
-            for row in rows[1:]
-            if any(cell.strip() for cell in row)
-        ]
+    def _rows(self, force_refresh: bool = False) -> list[list[str]]:
+        with self._cache_lock:
+            now = time.monotonic()
+            if not force_refresh and self._cached_rows is not None and (now - self._cache_time) < self._cache_ttl:
+                return [list(r) for r in self._cached_rows]
+            try:
+                rows = self._read_rows()
+            except Exception:
+                return [list(r) for r in self._cached_rows] if self._cached_rows is not None else []
+            self._cached_rows = rows
+            self._cached_records = None
+            self._cache_time = now
+            return [list(r) for r in rows]
+
+    def _records(self, force_refresh: bool = False) -> list[dict[str, str]]:
+        with self._cache_lock:
+            now = time.monotonic()
+            if not force_refresh and self._cached_records is not None and (now - self._cache_time) < self._cache_ttl:
+                return [dict(r) for r in self._cached_records]
+            rows = self._rows(force_refresh=force_refresh)
+            if not rows:
+                self._cached_records = []
+                return []
+            headers = [header.strip() for header in rows[0]]
+            records = [
+                {header: row[index].strip() if index < len(row) else "" for index, header in enumerate(headers)}
+                for row in rows[1:]
+                if any(cell.strip() for cell in row)
+            ]
+            self._cached_records = records
+            return [dict(r) for r in records]
 
     def find_by_patient_id(self, patient_id: str) -> dict[str, str] | None:
         return next((record for record in self._records() if record.get("Patient ID") == patient_id), None)
@@ -105,10 +144,11 @@ class PatientRepository:
             "Created At": record.created_at,
         }
         self._append_row([values.get(header, "") for header in headers], self._sheet_range)
+        self.invalidate_cache()
         return record
 
     def update_status(self, patient_id: str, status: str) -> bool:
-        rows = self._rows()
+        rows = self._rows(force_refresh=True)
         if not rows:
             return False
         headers = [header.strip() for header in rows[0]]
@@ -121,6 +161,7 @@ class PatientRepository:
             if patient_index < len(row) and row[patient_index].strip() == patient_id:
                 sheet_name = self._sheet_range.split("!", 1)[0]
                 self._update_cells(f"{sheet_name}!{_column_name(status_index)}{row_number}", [status])
+                self.invalidate_cache()
                 return True
         return False
 
@@ -128,7 +169,7 @@ class PatientRepository:
         return self._records()
 
     def update_patient_details(self, patient_id: str, updates: dict[str, str]) -> bool:
-        rows = self._rows()
+        rows = self._rows(force_refresh=True)
         if not rows:
             return False
         headers = [h.strip() for h in rows[0]]
@@ -161,11 +202,12 @@ class PatientRepository:
                 values = [row_dict.get(h, "") for h in headers]
                 last_col = _column_name(len(headers) - 1)
                 self._update_cells(f"{sheet_name}!A{row_number}:{last_col}{row_number}", values)
+                self.invalidate_cache()
                 return True
         return False
 
     def update_payment_status(self, identifier: str, payment_status: str) -> bool:
-        rows = self._rows()
+        rows = self._rows(force_refresh=True)
         if not rows:
             return False
         headers = [h.strip() for h in rows[0]]
@@ -183,11 +225,12 @@ class PatientRepository:
             matches_token = token_idx >= 0 and token_idx < len(row) and row[token_idx].strip() == norm
             if matches_id or matches_token:
                 self._update_cells(f"{sheet_name}!{_column_name(pay_idx)}{row_number}", [payment_status])
+                self.invalidate_cache()
                 return True
         return False
 
     def update_booking_status(self, identifier: str, booking_status: str) -> bool:
-        rows = self._rows()
+        rows = self._rows(force_refresh=True)
         if not rows:
             return False
         headers = [h.strip() for h in rows[0]]
@@ -207,6 +250,7 @@ class PatientRepository:
                 if "Status" in headers:
                     s_idx = headers.index("Status")
                     self._update_cells(f"{sheet_name}!{_column_name(s_idx)}{row_number}", [booking_status])
+                self.invalidate_cache()
                 return True
         return False
 
@@ -215,7 +259,7 @@ class PatientRepository:
         return next((r for r in self._records() if r.get("Token No", "").strip().casefold() == norm), None)
 
     def update_appointment_details(self, identifier: str, updates: dict[str, str]) -> bool:
-        rows = self._rows()
+        rows = self._rows(force_refresh=True)
         if not rows:
             return False
         headers = [h.strip() for h in rows[0]]
@@ -254,6 +298,7 @@ class PatientRepository:
                 values = [row_dict.get(h, "") for h in headers]
                 last_col = _column_name(len(headers) - 1)
                 self._update_cells(f"{sheet_name}!A{row_number}:{last_col}{row_number}", values)
+                self.invalidate_cache()
                 return True
         return False
 
@@ -282,6 +327,10 @@ class PatientRepository:
 class PatientTools:
     def __init__(self, repository: PatientRepository) -> None:
         self._repository = repository
+
+    def invalidate_cache(self) -> None:
+        if hasattr(self._repository, "invalidate_cache"):
+            self._repository.invalidate_cache()
 
     def list_patients(self) -> list[dict[str, str]]:
         return self._repository.list_records()

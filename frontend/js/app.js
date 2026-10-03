@@ -1,9 +1,10 @@
 /**
- * Main Application Orchestrator for Clinic CRM Admin.
+ * Main Application Orchestrator for Clinic CRM Admin & Doctor Portal.
  */
 
 import { Auth } from "./auth.js";
-import { Modal } from "./utils.js";
+import { API } from "./api.js";
+import { Modal, showToast } from "./utils.js";
 import { DashboardView } from "./views/dashboard.js";
 import { AppointmentsView } from "./views/appointments.js";
 import { CalendarView } from "./views/calendar.js";
@@ -14,8 +15,49 @@ import { PaymentsView } from "./views/payments.js";
 import { ReportsView } from "./views/reports.js";
 import { AuditLogsView } from "./views/audit_logs.js";
 import { SettingsView } from "./views/settings.js";
+import { DoctorAccountsView } from "./views/doctor_accounts.js";
+import { PrescriptionsView } from "./views/prescriptions.js";
+
+// Doctor Portal Views
+import { DoctorDashboardView } from "./views/doctor_dashboard.js";
+import { DoctorAppointmentsView } from "./views/doctor_appointments.js";
+import { DoctorSlotsView } from "./views/doctor_slots.js";
+import { DoctorPatientsView } from "./views/doctor_patients.js";
+import { DoctorPrescriptionsView } from "./views/doctor_prescriptions.js";
+
+export const ThemeManager = {
+  init() {
+    const theme = this.getTheme();
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("crm_theme", theme);
+  },
+  getTheme() {
+    return localStorage.getItem("crm_theme") || "light";
+  },
+  setTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("crm_theme", theme);
+    const btn = document.getElementById("header-theme-toggle");
+    if (btn) btn.textContent = theme === "dark" ? "☀️" : "🌙";
+  },
+  toggle() {
+    const current = this.getTheme();
+    const next = current === "dark" ? "light" : "dark";
+    this.setTheme(next);
+    return next;
+  },
+};
+
+const DOCTOR_ROUTES = new Set([
+  "doctor-dashboard",
+  "doctor-appointments",
+  "doctor-slots",
+  "doctor-patients",
+  "doctor-prescriptions",
+]);
 
 const VIEWS = {
+  // Admin Views
   dashboard: {
     title: "Dashboard",
     subtitle: "Clinic Operations & Metrics",
@@ -31,6 +73,11 @@ const VIEWS = {
     subtitle: "Day, Week, and Month Visual Schedule",
     module: CalendarView,
   },
+  prescriptions: {
+    title: "Prescription Oversight",
+    subtitle: "System-wide Clinical Audit & Issued Prescriptions",
+    module: PrescriptionsView,
+  },
   patients: {
     title: "Patient Directory",
     subtitle: "Patient Profiles & Medical Visit History",
@@ -40,6 +87,11 @@ const VIEWS = {
     title: "Doctor Directory",
     subtitle: "Clinical Specialists, Schedules & Consultation Fees",
     module: DoctorsView,
+  },
+  "doctor-accounts": {
+    title: "Doctor Accounts",
+    subtitle: "Physician Login Credentials & Access Control",
+    module: DoctorAccountsView,
   },
   slots: {
     title: "Appointment Slots",
@@ -66,14 +118,118 @@ const VIEWS = {
     subtitle: "System Status & Admin Account",
     module: SettingsView,
   },
+
+  // Doctor Views
+  "doctor-dashboard": {
+    title: "Doctor Dashboard",
+    subtitle: "Clinical Consultations & Personal Schedule",
+    module: DoctorDashboardView,
+  },
+  "doctor-appointments": {
+    title: "My Appointments",
+    subtitle: "Booked Consultations & Patient Visit Records",
+    module: DoctorAppointmentsView,
+  },
+  "doctor-slots": {
+    title: "My Availability",
+    subtitle: "Manage Working Hours & Consultation Slots",
+    module: DoctorSlotsView,
+  },
+  "doctor-patients": {
+    title: "My Patients",
+    subtitle: "Patients Assigned to Your Clinical Care",
+    module: DoctorPatientsView,
+  },
+  "doctor-prescriptions": {
+    title: "Prescriptions",
+    subtitle: "Author, Finalize & Issue Digital Prescriptions",
+    module: DoctorPrescriptionsView,
+  },
 };
+
+export function showChangePasswordModal(forced = false) {
+  const content = `
+    <form id="change-pwd-form" style="display: flex; flex-direction: column; gap: 14px;">
+      ${
+        forced
+          ? '<div style="padding: 10px; background: rgba(245, 158, 11, 0.12); border: 1px solid #f59e0b; border-radius: 6px; font-size: 13px; color: #b45309;">⚠️ First-time login detected. You must change your default password before proceeding.</div>'
+          : ""
+      }
+      <div class="form-group">
+        <label class="form-label">Current Password</label>
+        <input type="password" id="old-pwd" class="form-control" required autocomplete="current-password" placeholder="Enter existing password" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">New Password (minimum 6 characters)</label>
+        <input type="password" id="new-pwd" class="form-control" required minlength="6" autocomplete="new-password" placeholder="Create strong new password" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confirm New Password</label>
+        <input type="password" id="confirm-pwd" class="form-control" required minlength="6" autocomplete="new-password" placeholder="Repeat new password" />
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;">
+        ${
+          !forced
+            ? '<button type="button" class="btn btn-secondary" id="change-pwd-cancel-btn">Cancel</button>'
+            : ""
+        }
+        <button type="submit" class="btn btn-primary" id="change-pwd-submit-btn">Update Password</button>
+      </div>
+    </form>
+  `;
+
+  Modal.open("Change Password", content);
+
+  document.getElementById("change-pwd-cancel-btn")?.addEventListener("click", () => {
+    Modal.close();
+  });
+
+  const form = document.getElementById("change-pwd-form");
+  form?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const oldPwd = document.getElementById("old-pwd").value;
+    const newPwd = document.getElementById("new-pwd").value;
+    const confirmPwd = document.getElementById("confirm-pwd").value;
+
+    if (newPwd !== confirmPwd) {
+      showToast("New passwords do not match", "error");
+      return;
+    }
+    if (newPwd.length < 6) {
+      showToast("Password must be at least 6 characters", "error");
+      return;
+    }
+
+    const btn = document.getElementById("change-pwd-submit-btn");
+    btn.disabled = true;
+    btn.textContent = "Updating...";
+
+    try {
+      await API.changePassword(oldPwd, newPwd);
+      showToast("Password updated successfully!", "success");
+      const u = Auth.getUser();
+      if (u) {
+        u.must_change_password = false;
+        localStorage.setItem("crm_user", JSON.stringify(u));
+      }
+      Modal.close();
+    } catch (err) {
+      showToast("Failed to update password: " + err.message, "error");
+      btn.disabled = false;
+      btn.textContent = "Update Password";
+    }
+  });
+}
 
 class App {
   constructor() {
     this.currentView = null;
+    this.initializedViews = new Set();
   }
 
   init() {
+    ThemeManager.init();
+
     // 1. Guard route
     if (!Auth.requireAuth()) {
       return;
@@ -90,20 +246,47 @@ class App {
 
     // 5. Initial route
     this.handleHashChange();
+
+    // 6. Check forced password change
+    if (Auth.mustChangePassword()) {
+      setTimeout(() => {
+        showChangePasswordModal(true);
+      }, 300);
+    }
   }
 
   setupUserInfo() {
     const user = Auth.getUser();
-    if (user) {
-      const nameEl = document.getElementById("header-user-name");
-      const clinicEl = document.getElementById("header-clinic-name");
-      const avatarEl = document.getElementById("sidebar-user-avatar");
+    if (!user) return;
 
+    const nameEl = document.getElementById("header-user-name");
+    const roleEl = document.getElementById("header-user-role");
+    const clinicEl = document.getElementById("header-clinic-name");
+    const portalLabelEl = document.getElementById("header-portal-label");
+    const avatarEl = document.getElementById("sidebar-user-avatar");
+    const adminNav = document.getElementById("nav-section-admin");
+    const docNav = document.getElementById("nav-section-doctor");
+
+    if (Auth.isDoctor()) {
+      if (adminNav) adminNav.style.display = "none";
+      if (docNav) docNav.style.display = "block";
+      if (portalLabelEl) portalLabelEl.textContent = "Doctor Portal";
+      if (nameEl) nameEl.textContent = user.doctor_name || user.username || "Doctor";
+      if (roleEl) roleEl.textContent = "Physician / Doctor";
+      if (avatarEl) avatarEl.textContent = "Dr";
+    } else {
+      if (adminNav) adminNav.style.display = "block";
+      if (docNav) docNav.style.display = "none";
+      if (portalLabelEl) portalLabelEl.textContent = "Admin CRM";
       if (nameEl) nameEl.textContent = user.username || "Admin";
-      if (clinicEl && user.clinic_name) clinicEl.textContent = user.clinic_name;
+      if (roleEl) roleEl.textContent = "Administrator";
       if (avatarEl) {
         avatarEl.textContent = (user.username || "A").substring(0, 1).toUpperCase();
       }
+    }
+
+    if (clinicEl && user.clinic_name) {
+      clinicEl.textContent = user.clinic_name;
     }
   }
 
@@ -140,17 +323,55 @@ class App {
         Auth.logout();
       }
     });
+
+    // Theme toggle button
+    const themeToggleBtn = document.getElementById("header-theme-toggle");
+    if (themeToggleBtn) {
+      themeToggleBtn.textContent = ThemeManager.getTheme() === "dark" ? "☀️" : "🌙";
+      themeToggleBtn.addEventListener("click", () => {
+        const next = ThemeManager.toggle();
+        themeToggleBtn.textContent = next === "dark" ? "☀️" : "🌙";
+      });
+    }
+
+    // Doctor Change Password Nav button
+    document.getElementById("doctor-change-password-nav-btn")?.addEventListener("click", () => {
+      showChangePasswordModal(false);
+    });
   }
 
   handleHashChange() {
     const rawHash = window.location.hash.replace(/^#\/?/, "").toLowerCase();
-    const viewKey = VIEWS[rawHash] ? rawHash : "dashboard";
+    const isDoc = Auth.isDoctor();
+
+    let viewKey;
+    if (isDoc) {
+      // Doctor role: restrict strictly to doctor routes
+      if (DOCTOR_ROUTES.has(rawHash)) {
+        viewKey = rawHash;
+      } else {
+        viewKey = "doctor-dashboard";
+        if (window.location.hash !== "#doctor-dashboard") {
+          window.location.hash = "#doctor-dashboard";
+          return;
+        }
+      }
+    } else {
+      // Admin role: default to dashboard; redirect out of doctor routes
+      if (DOCTOR_ROUTES.has(rawHash)) {
+        viewKey = "dashboard";
+        window.location.hash = "#dashboard";
+        return;
+      } else {
+        viewKey = VIEWS[rawHash] ? rawHash : "dashboard";
+      }
+    }
 
     this.loadView(viewKey);
   }
 
   async loadView(viewKey) {
-    if (this.currentView === viewKey) return;
+    if (this.currentView === viewKey && this.initializedViews.has(viewKey)) return;
     this.currentView = viewKey;
 
     const config = VIEWS[viewKey];
@@ -185,9 +406,19 @@ class App {
     document.getElementById("app-sidebar")?.classList.remove("open");
     document.getElementById("sidebar-backdrop")?.classList.remove("active");
 
-    // Initialize View Module
-    if (config.module && typeof config.module.init === "function") {
-      await config.module.init();
+    // Initialize View Module safely
+    if (config.module) {
+      try {
+        if (!this.initializedViews.has(viewKey) || typeof config.module.loadData !== "function") {
+          await config.module.init();
+          this.initializedViews.add(viewKey);
+        } else if (typeof config.module.loadData === "function") {
+          await config.module.loadData();
+        }
+      } catch (err) {
+        console.error(`Failed to load view '${viewKey}':`, err);
+        showToast(`Failed to load ${config.title}: ${err.message}`, "error");
+      }
     }
   }
 }
@@ -197,3 +428,4 @@ document.addEventListener("DOMContentLoaded", () => {
   const app = new App();
   app.init();
 });
+

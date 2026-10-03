@@ -1,12 +1,60 @@
 """Local retrieval store used until a hosted vector database is selected."""
 
 from dataclasses import dataclass
-import pickle
+import logging
 from pathlib import Path
+import pickle
 import re
+from typing import Any
 
-import faiss
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+_faiss: Any = None
+_faiss_load_error: Exception | None = None
+_faiss_attempted: bool = False
+
+
+def get_faiss() -> Any:
+    """Lazily import and return the faiss module, or None if unavailable."""
+    global _faiss, _faiss_load_error, _faiss_attempted
+    if not _faiss_attempted:
+        _faiss_attempted = True
+        try:
+            import faiss
+            _faiss = faiss
+            _faiss_load_error = None
+        except Exception as e:
+            _faiss = None
+            _faiss_load_error = e
+            logger.warning(
+                "FAISS native library could not be loaded (%s: %s). "
+                "Vector retrieval and RAG knowledge indexing will be disabled.",
+                type(e).__name__,
+                e,
+            )
+    return _faiss
+
+
+def is_faiss_available() -> bool:
+    """Check if the faiss module is available without raising."""
+    return get_faiss() is not None
+
+
+def get_faiss_load_error() -> Exception | None:
+    """Return the error encountered when attempting to import faiss, if any."""
+    get_faiss()
+    return _faiss_load_error
+
+
+def reset_faiss_state() -> None:
+    """Reset the lazy-loaded FAISS state (used for testing failure/success paths)."""
+    global _faiss, _faiss_load_error, _faiss_attempted
+    _faiss = None
+    _faiss_load_error = None
+    _faiss_attempted = False
+
 try:
     from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
 except (ImportError, Exception):  # Fallback if scikit-learn DLLs are blocked by OS Application Control
@@ -109,19 +157,25 @@ def normalize_text(text: str) -> str:
 @dataclass
 class LocalVectorStore:
     chunks: list[str]
-    vectorizer: TfidfVectorizer | None = None
-    index: faiss.Index | None = None
+    vectorizer: Any | None = None
+    index: Any | None = None
 
     @classmethod
     def from_chunks(cls, chunks: list[str]) -> "LocalVectorStore":
         store = cls(chunks)
         if chunks:
+            faiss_module = get_faiss()
+            if faiss_module is None:
+                err = get_faiss_load_error()
+                raise RuntimeError(
+                    f"Cannot build vector index because FAISS is unavailable: {err}"
+                )
             store.vectorizer = TfidfVectorizer(
                 preprocessor=normalize_text,
                 stop_words=list(ENGLISH_STOP_WORDS | STOP_WORDS),
             )
             vectors = store.vectorizer.fit_transform(chunks).toarray().astype("float32")
-            store.index = faiss.IndexFlatIP(vectors.shape[1])
+            store.index = faiss_module.IndexFlatIP(vectors.shape[1])
             store.index.add(vectors)
         return store
 
@@ -130,7 +184,9 @@ class LocalVectorStore:
         with (directory / "metadata.pkl").open("wb") as file:
             pickle.dump((self.chunks, self.vectorizer), file)
         if self.index is not None:
-            faiss.write_index(self.index, str(directory / "index.faiss"))
+            faiss_module = get_faiss()
+            if faiss_module is not None:
+                faiss_module.write_index(self.index, str(directory / "index.faiss"))
 
     @classmethod
     def load(cls, directory: Path) -> "LocalVectorStore":
@@ -138,12 +194,20 @@ class LocalVectorStore:
         index_path = directory / "index.faiss"
         if not metadata.exists() or not index_path.exists():
             return cls.from_chunks([])
+        faiss_module = get_faiss()
+        if faiss_module is None:
+            logger.warning(
+                "Skipping FAISS vector store loading from %s because FAISS is unavailable.",
+                directory,
+            )
+            return cls.from_chunks([])
         try:
             with metadata.open("rb") as file:
                 chunks, vectorizer = pickle.load(file)
-            store = cls(chunks, vectorizer, faiss.read_index(str(index_path)))
+            store = cls(chunks, vectorizer, faiss_module.read_index(str(index_path)))
             return store
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load vector store from %s: %s", directory, exc)
             return cls.from_chunks([])
 
     def search(self, query: str, limit: int = 3) -> list[str]:

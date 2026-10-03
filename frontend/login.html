@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script>try{var t=localStorage.getItem('crm_theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
   <title>Clinic CRM — Admin Login</title>
   <link rel="stylesheet" href="css/variables.css" />
   <link rel="stylesheet" href="css/base.css" />
@@ -99,8 +100,15 @@
           username: res.username,
           role: res.role,
           clinic_name: res.clinic_name,
+          doctor_id: res.doctor_id,
+          doctor_name: res.doctor_name,
+          must_change_password: res.must_change_password,
         });
-        window.location.href = "/admin/";
+        if (res.role === "doctor") {
+          window.location.href = "/admin/#doctor-dashboard";
+        } else {
+          window.location.href = "/admin/#dashboard";
+        }
       } catch (err) {
         alertBox.textContent = err.message || "Invalid credentials. Please verify.";
         alertBox.classList.add("show");
