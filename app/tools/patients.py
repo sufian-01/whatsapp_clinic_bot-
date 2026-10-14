@@ -74,7 +74,9 @@ class PatientRepository:
             try:
                 rows = self._read_rows()
             except Exception:
-                return [list(r) for r in self._cached_rows] if self._cached_rows is not None else []
+                if self._cached_rows is not None:
+                    return [list(r) for r in self._cached_rows]
+                raise
             self._cached_rows = rows
             self._cached_records = None
             self._cache_time = now

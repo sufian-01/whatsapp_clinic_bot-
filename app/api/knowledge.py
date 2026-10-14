@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from ..core.auth import get_current_admin
 from ..rag.service import RagService
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,17 @@ def create_knowledge_router(knowledge_dir: Path, rag: RagService) -> APIRouter:
         }
 
     @router.post("/upload")
-    async def upload_pdf(file: UploadFile = File(...)) -> dict[str, int | str]:
+    async def upload_pdf(
+        file: UploadFile = File(...),
+        current_admin: dict = Depends(get_current_admin),
+    ) -> dict[str, int | str]:
+        from ..core.rbac import Permission, has_permission
+        if not has_permission(current_admin.get("role", ""), Permission.KNOWLEDGE_UPLOAD):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access forbidden: Knowledge upload requires TENANT_ADMIN or SUPER_ADMIN permissions.",
+            )
+
         if not rag.is_available():
             logger.warning(
                 "PDF upload rejected on /api/v1/knowledge/upload because FAISS is unavailable."
@@ -43,8 +54,17 @@ def create_knowledge_router(knowledge_dir: Path, rag: RagService) -> APIRouter:
         if file.content_type != "application/pdf" or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=415, detail="Only PDF files are accepted")
 
-        knowledge_dir.mkdir(parents=True, exist_ok=True)
-        destination = knowledge_dir / f"{uuid4().hex}.pdf"
+        tenant_id = current_admin.get("tenant_id") or "default"
+        if tenant_id and tenant_id != "default":
+            from ..core.storage import get_tenant_storage_path
+            try:
+                destination = get_tenant_storage_path(tenant_id, "knowledge", f"{uuid4().hex}.pdf", create_dirs=True)
+            except Exception:
+                knowledge_dir.mkdir(parents=True, exist_ok=True)
+                destination = knowledge_dir / f"{uuid4().hex}.pdf"
+        else:
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            destination = knowledge_dir / f"{uuid4().hex}.pdf"
         try:
             destination.write_bytes(await file.read())
             chunks = rag.ingest_pdf(destination)

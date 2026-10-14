@@ -27,7 +27,30 @@ class PrescriptionService:
         storage_path: Optional[Path] = None,
         pdf_dir: Optional[Path] = None,
         audit_service: Optional[AuditService] = None,
+        session_factory=None,
     ) -> None:
+        self._pg = None
+        if session_factory is not None:
+            from ..repositories.postgres_crm_repositories import PostgresPrescriptionService
+            self._pg = PostgresPrescriptionService(session_factory, pdf_dir=pdf_dir, audit_service=audit_service)
+        elif storage_path is None:
+            from ..db.session import is_db_configured, get_session_factory
+            if is_db_configured():
+                try:
+                    from ..repositories.postgres_crm_repositories import PostgresPrescriptionService
+                    self._pg = PostgresPrescriptionService(get_session_factory(), pdf_dir=pdf_dir, audit_service=audit_service)
+                except Exception:
+                    self._pg = None
+
+        if self._pg is not None:
+            self.storage_path = storage_path or Path("data/prescriptions.json")
+            self.pdf_dir = self._pg.pdf_dir
+            self.audit = self._pg.audit
+            self._lock = self._pg._lock
+            self._prescriptions = {}
+            self._by_appointment = {}
+            return
+
         root_dir = Path(__file__).resolve().parents[2]
         self.storage_path = storage_path or (root_dir / "data" / "prescriptions.json")
         self.pdf_dir = pdf_dir or (root_dir / "data" / "prescriptions")
@@ -69,6 +92,8 @@ class PrescriptionService:
 
     def validate_medicines(self, medicines: list[dict], allow_empty: bool = True) -> list[dict]:
         """Sanitize and validate medicine items."""
+        if self._pg is not None:
+            return self._pg.validate_medicines(medicines, allow_empty=allow_empty)
         if not medicines and not allow_empty:
             raise ValueError("Prescription must include at least one medication.")
 
@@ -116,6 +141,16 @@ class PrescriptionService:
         user: str = "doctor",
     ) -> dict:
         """Save prescription as draft. Safe against overwriting finalized records."""
+        if self._pg is not None:
+            return self._pg.create_or_update_draft(
+                data=data,
+                doctor_id=doctor_id,
+                doctor_name=doctor_name,
+                doctor_specialization=doctor_specialization,
+                doctor_qualification=doctor_qualification,
+                doctor_reg_no=doctor_reg_no,
+                user=user,
+            )
         with self._lock:
             rx_id = data.get("prescription_id", "").strip()
             now = datetime.now(timezone.utc).isoformat()
@@ -197,6 +232,8 @@ class PrescriptionService:
         user: str = "doctor",
     ) -> dict:
         """Review and finalize a prescription with comprehensive validation."""
+        if self._pg is not None:
+            return self._pg.finalize_prescription(prescription_id=prescription_id, doctor_id=doctor_id, user=user)
         with self._lock:
             rx = self._prescriptions.get(prescription_id)
             if not rx:
@@ -252,6 +289,14 @@ class PrescriptionService:
         amendment_reason: str = "Clinical dosage correction",
     ) -> dict:
         """Amend an already finalized prescription by creating an explicit new version."""
+        if self._pg is not None:
+            return self._pg.amend_prescription(
+                prescription_id=prescription_id,
+                updates=updates,
+                doctor_id=doctor_id,
+                user=user,
+                amendment_reason=amendment_reason,
+            )
         with self._lock:
             rx = self._prescriptions.get(prescription_id)
             if not rx:
@@ -329,12 +374,16 @@ class PrescriptionService:
 
     def get_prescription(self, prescription_id: str) -> Optional[dict]:
         """Fetch prescription by ID."""
+        if self._pg is not None:
+            return self._pg.get_prescription(prescription_id=prescription_id)
         with self._lock:
             rx = self._prescriptions.get(prescription_id)
             return dict(rx) if rx else None
 
     def get_prescription_by_appointment(self, appointment_id: str) -> Optional[dict]:
         """Find prescription associated with a specific appointment token via O(1) index."""
+        if self._pg is not None:
+            return self._pg.get_prescription_by_appointment(appointment_id=appointment_id)
         norm_id = appointment_id.strip().casefold()
         if not norm_id:
             return None
@@ -358,6 +407,15 @@ class PrescriptionService:
         search: Optional[str] = None,
     ) -> list[dict]:
         """List prescriptions with filtering."""
+        if self._pg is not None:
+            return self._pg.list_prescriptions(
+                doctor_id=doctor_id,
+                patient_id=patient_id,
+                appointment_id=appointment_id,
+                status=status,
+                date_filter=date_filter,
+                search=search,
+            )
         with self._lock:
             items = list(self._prescriptions.values())
 
@@ -404,6 +462,13 @@ class PrescriptionService:
         error: Optional[str] = None,
     ) -> None:
         """Track prescription email delivery state."""
+        if self._pg is not None:
+            return self._pg.record_email_delivery(
+                prescription_id=prescription_id,
+                success=success,
+                recipient=recipient,
+                error=error,
+            )
         with self._lock:
             rx = self._prescriptions.get(prescription_id)
             if not rx:
@@ -426,6 +491,14 @@ class PrescriptionService:
         clinic_address: str = "",
     ) -> tuple[str, Path]:
         """Generate a ReportLab PDF document for a prescription, reusing cached PDF for finalized records."""
+        if self._pg is not None:
+            return self._pg.generate_pdf_for_prescription(
+                prescription_id=prescription_id,
+                clinic_name=clinic_name,
+                clinic_phone=clinic_phone,
+                clinic_email=clinic_email,
+                clinic_address=clinic_address,
+            )
         rx = self.get_prescription(prescription_id)
         if not rx:
             raise ValueError(f"Prescription '{prescription_id}' not found.")

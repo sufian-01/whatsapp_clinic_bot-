@@ -62,9 +62,15 @@
     import { API } from "./js/api.js";
     import { Auth } from "./js/auth.js";
 
-    // If already logged in, redirect to admin SPA
+    // If already logged in, redirect appropriately
     if (Auth.isAuthenticated()) {
-      window.location.href = "/admin/";
+      if (Auth.isSuperAdmin()) {
+        window.location.href = "/super-admin/";
+      } else if (Auth.isDoctor()) {
+        window.location.href = "/admin/#doctor-dashboard";
+      } else {
+        window.location.href = "/admin/#dashboard";
+      }
     }
 
     const form = document.getElementById("login-form");
@@ -104,7 +110,13 @@
           doctor_name: res.doctor_name,
           must_change_password: res.must_change_password,
         });
-        if (res.role === "doctor") {
+
+        const roleUpper = String(res.role || "").toUpperCase();
+        if (roleUpper === "SUPER_ADMIN") {
+          localStorage.setItem("super_admin_token", res.token);
+          localStorage.setItem("super_admin_user", JSON.stringify(res));
+          window.location.href = "/super-admin/";
+        } else if (roleUpper === "DOCTOR") {
           window.location.href = "/admin/#doctor-dashboard";
         } else {
           window.location.href = "/admin/#dashboard";

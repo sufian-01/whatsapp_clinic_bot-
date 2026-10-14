@@ -8,6 +8,7 @@ from pathlib import Path
 
 from telegram import Update
 
+from ..core.tenant import tenant_scope
 from ..services.sarvam_service import SarvamConfigurationError, SarvamError
 from .keyboards import (
     appointment_menu,
@@ -81,15 +82,16 @@ async def handle_update(update: Update, clinic_name: str, graph, bot, sarvam=Non
     history = list(state.get("messages", []))
     history.append({"role": "user", "content": state["user_text"]})
     state["messages"] = history[-12:]
-    logger.info("LangGraph execution started")
-    result = await asyncio.to_thread(graph.invoke, state)
-    if result.get("response"):
-        resp_history = list(result.get("messages", state["messages"]))
-        resp_history.append({"role": "assistant", "content": result["response"]})
-        result["messages"] = resp_history[-12:]
-    sessions.save(chat, result)
-    await _send_response(chat, result, bot, sarvam)
-    logger.info("Telegram response sent")
+    with tenant_scope("default"):
+        logger.info("LangGraph execution started")
+        result = await asyncio.to_thread(graph.invoke, state)
+        if result.get("response"):
+            resp_history = list(result.get("messages", state["messages"]))
+            resp_history.append({"role": "assistant", "content": result["response"]})
+            result["messages"] = resp_history[-12:]
+        sessions.save(chat, result)
+        await _send_response(chat, result, bot, sarvam)
+        logger.info("Telegram response sent")
 
 
 def _extract_input(update: Update):

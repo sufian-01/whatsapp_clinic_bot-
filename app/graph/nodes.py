@@ -143,6 +143,7 @@ class GraphNodes:
             return {**state, "response": "Doctor information is not available right now. Please contact the clinic team at " + self._support_phone + "."}
 
         text = state.get("user_text", "")
+        logger.info(">>> [AGENT NODE TRIGGERED] 'doctor_list' | text=%r", text)
 
         # Availability always comes from appointment slots, never from the
         # doctors sheet's working-day metadata.
@@ -408,9 +409,10 @@ class GraphNodes:
     # ------------------------------------------------------------------
 
     def appointment_start(self, state: GraphState) -> GraphState:
+        text = state.get("user_text", "")
+        logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_start' (Booking Initiated) | text=%r", text)
         # If a doctor was named in the booking request, show factual slot
         # availability before asking the patient to choose a date.
-        text = state.get("user_text", "")
         if self._doctors is not None:
             resolved = self._doctors.resolve_doctor(text)
             if resolved.get("status") == "matched":
@@ -439,6 +441,7 @@ class GraphNodes:
     def appointment_progress(self, state: GraphState) -> GraphState:  # noqa: C901
         step = state.get("appointment_step", "name")
         text = state.get("user_text", "").strip()
+        logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_progress' (Step: %s) | text=%r", step, text)
 
         if step == "name":
             return {**state, "patient_name": text, "appointment_step": "email", "response": "What email address should receive the invoice?"}
@@ -467,8 +470,27 @@ class GraphNodes:
             return self._handle_date_step(state, text)
 
         if step in {"slot", "pre_patient_slot"}:
-            slot_id = text.removeprefix("slot:")
-            slot = next((item for item in state.get("available_slots", []) if item.get("Slot ID") == slot_id), None)
+            slot_id = text.removeprefix("slot:").strip()
+            available = state.get("available_slots", [])
+            # 1. Match by Slot ID
+            slot = next((item for item in available if item.get("Slot ID", "").strip() == slot_id), None)
+            # 2. Match by Start Time (e.g. '10:00 AM', '10:00', '10am', '10')
+            if not slot:
+                cleaned_text = text.lower().replace(" ", "").replace(":00", "")
+                for s in available:
+                    st = s.get("Start Time", "").lower().replace(" ", "")
+                    st_simple = st.replace(":00", "")
+                    if text.strip().lower() in st or cleaned_text in st_simple or st_simple in cleaned_text:
+                        slot = s
+                        slot_id = s.get("Slot ID", "")
+                        break
+            # 3. Match by 1-based index (e.g. '1', 'slot 1')
+            if not slot and text.strip().isdigit():
+                idx = int(text.strip()) - 1
+                if 0 <= idx < len(available):
+                    slot = available[idx]
+                    slot_id = slot.get("Slot ID", "")
+
             if not slot:
                 return {**state, "response": "That slot is no longer available. Please select another slot."}
             if step == "pre_patient_slot":
@@ -508,9 +530,10 @@ class GraphNodes:
                 if self._slots:
                     self._release_slot(state.get("slot_id", ""), state.get("patient_id"))
                 return {**state, "appointment_step": "payment", "ui": "payment", "response": payment.get("message", "Online payment will be available soon. Please choose Offline Payment for now.")}
-            if text.casefold() not in {"offline", "payment_offline"}:
-                return {**state, "response": "Please choose Online Payment or Offline Payment."}
-            return self._complete_offline(state)
+            offline_phrases = {"offline", "payment_offline", "pay at clinic", "clinic", "cash", "pay offline", "later"}
+            if any(p in text.casefold() for p in offline_phrases):
+                return self._complete_offline(state)
+            return {**state, "response": "Please choose Online Payment or Offline Payment (Pay at Clinic)."}
 
         return {**state, "response": "Please continue with the appointment details."}
 
@@ -716,11 +739,40 @@ class GraphNodes:
             if self._slots:
                 self._slots.release_slot_if_needed(state.get("slot_id", ""), state.get("patient_id"))
             return {**state, "response": "I couldn't complete the booking right now. Please try again or contact clinic support at " + self._support_phone + "."}
+        pat_name = record.get("name", record.get("Name", state.get("patient_name", ""))) if isinstance(record, dict) else getattr(record, "name", state.get("patient_name", ""))
+        pat_email = record.get("email", record.get("Email", state.get("patient_email", ""))) if isinstance(record, dict) else getattr(record, "email", state.get("patient_email", ""))
+        pat_phone = record.get("phone", record.get("Phone", state.get("patient_phone", ""))) if isinstance(record, dict) else getattr(record, "phone", state.get("patient_phone", ""))
+
         try:
-            qr_result = self._payments.generate_offline_upi_qr(state["amount"], self._clinic_name, token_no, Path("data/invoices")) if self._payments else {"success": False, "error_code": "QR_TOOL_UNAVAILABLE"}
-            if not qr_result.get("success"):
-                raise RuntimeError("Offline payment QR generation failed")
-            invoice_data = InvoiceData(self._clinic_name, self._support_phone, "", "", record.name, record.email, record.phone, state["doctor_name"], state.get("specialization", ""), state["appointment_date"], state["appointment_time"], token_no, state["amount"], "Pay at Clinic / UPI", "Pending", qr_result["qr_path"])
+            qr_path = ""
+            upi_id = ""
+            if self._payments:
+                try:
+                    qr_result = self._payments.generate_offline_upi_qr(state["amount"], self._clinic_name, token_no, Path("data/invoices"))
+                    if qr_result.get("success"):
+                        qr_path = qr_result.get("qr_path", "")
+                        upi_id = qr_result.get("upi_id", "") or (getattr(self._payments, "upi_id", "") if self._payments else "")
+                except Exception:
+                    pass
+            invoice_data = InvoiceData(
+                self._clinic_name,
+                self._support_phone,
+                "",
+                "",
+                pat_name,
+                pat_email,
+                pat_phone,
+                state["doctor_name"],
+                state.get("specialization", ""),
+                state["appointment_date"],
+                state["appointment_time"],
+                token_no,
+                state["amount"],
+                "Pay at Clinic / UPI",
+                "Pending",
+                qr_path,
+                upi_id=upi_id,
+            )
             invoice_result = self._invoices.generate_invoice(invoice_data, Path("data/invoices"))
             if not invoice_result.get("success"):
                 raise RuntimeError("Invoice generation failed")
@@ -731,7 +783,7 @@ class GraphNodes:
         email_sent = False
         if self._gmail:
             try:
-                email_result = self._gmail.send_invoice_email(record.email, invoice_number, f"Appointment Confirmation & Invoice - {self._clinic_name}", "Your appointment is confirmed. Payment is pending and payable at the clinic.", str(invoice_path))
+                email_result = self._gmail.send_invoice_email(pat_email, invoice_number, f"Appointment Confirmation & Invoice - {self._clinic_name}", "Your appointment is confirmed. Payment is pending and payable at the clinic.", str(invoice_path))
                 email_sent = email_result.get("success", False)
             except Exception:
                 logger.exception("Invoice email delivery failed after appointment confirmation")
@@ -759,6 +811,7 @@ class GraphNodes:
         return {**state, "response": "Please contact the clinic team at " + self._support_phone + "."}
 
     def answer(self, state: GraphState) -> GraphState:
+        logger.info(">>> [AGENT NODE TRIGGERED] 'answer' (LLM/Gemini) | user_text=%r", state.get("user_text", ""))
         if state.get("intent") == "doctor_information" and not state.get("doctor_context"):
             return {**state, "response": "I couldn't verify doctor information right now. Please contact the clinic team at " + self._support_phone + "."}
         context = state.get("clinic_context", [])

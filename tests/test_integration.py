@@ -9,6 +9,7 @@ from telegram import Bot, Update
 
 from app.api.knowledge import create_knowledge_router
 from app.api.webhook import create_webhook_router
+from app.core.auth import create_session
 from app.core.config import Settings
 from app.graph.graph import build_graph
 from app.graph.nodes import GraphNodes
@@ -58,7 +59,7 @@ class BrokenBot(FakeBot):
 
 
 class IntegrationTests(unittest.TestCase):
-    def test_pdf_upload_is_searchable_without_restart(self):
+    def test_upload_without_admin_auth_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             rag = RagService(root / "knowledge", root / "vectorstore")
@@ -66,21 +67,27 @@ class IntegrationTests(unittest.TestCase):
             app.include_router(create_knowledge_router(root / "knowledge" / "uploads", rag))
             response = TestClient(app).post(
                 "/api/v1/knowledge/upload",
+                files={"file": ("clinic.pdf", make_pdf("Clinic timing."), "application/pdf")},
+            )
+            self.assertEqual(response.status_code, 401)
+
+    def test_pdf_upload_is_searchable_without_restart(self):
+        token = create_session("admin", role="admin")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rag = RagService(root / "knowledge", root / "vectorstore")
+            app = FastAPI()
+            app.include_router(create_knowledge_router(root / "knowledge" / "uploads", rag))
+            response = TestClient(app).post(
+                "/api/v1/knowledge/upload",
+                headers={"Authorization": f"Bearer {token}"},
                 files={"file": ("clinic.pdf", make_pdf("Clinic timing is Monday to Saturday 9 AM to 8 PM."), "application/pdf")},
             )
             self.assertEqual(response.status_code, 200)
             self.assertTrue(rag.search("What is the clinic timing?"))
 
     def test_invalid_upload_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            rag = RagService(root / "knowledge", root / "vectorstore")
-            app = FastAPI()
-            app.include_router(create_knowledge_router(root / "knowledge", rag))
-            response = TestClient(app).post("/api/v1/knowledge/upload", files={"file": ("notes.txt", b"not pdf", "text/plain")})
-            self.assertEqual(response.status_code, 415)
-
-    def test_pdf_without_text_is_rejected(self):
+        token = create_session("admin", role="admin")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             rag = RagService(root / "knowledge", root / "vectorstore")
@@ -88,6 +95,21 @@ class IntegrationTests(unittest.TestCase):
             app.include_router(create_knowledge_router(root / "knowledge", rag))
             response = TestClient(app).post(
                 "/api/v1/knowledge/upload",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"file": ("notes.txt", b"not pdf", "text/plain")},
+            )
+            self.assertEqual(response.status_code, 415)
+
+    def test_pdf_without_text_is_rejected(self):
+        token = create_session("admin", role="admin")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rag = RagService(root / "knowledge", root / "vectorstore")
+            app = FastAPI()
+            app.include_router(create_knowledge_router(root / "knowledge", rag))
+            response = TestClient(app).post(
+                "/api/v1/knowledge/upload",
+                headers={"Authorization": f"Bearer {token}"},
                 files={"file": ("empty.pdf", make_pdf(""), "application/pdf")},
             )
             self.assertEqual(response.status_code, 422)

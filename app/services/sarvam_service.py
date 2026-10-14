@@ -125,12 +125,14 @@ class SarvamService:
                 headers=self._headers(),
                 json={
                     "text": text,
+                    "target_language_code": language_code,
                     "language_code": language_code,
                     "model": self._tts_model,
                     "speaker": self._tts_speaker,
-                    # Sarvam supports Opus output, which Telegram accepts as a
+                    # Sarvam supports Opus output, which Telegram and WhatsApp accept as a
                     # voice message; requesting it avoids a converter dependency.
                     "output_audio_codec": "opus",
+                    "speech_sample_rate": 16000,
                 },
                 timeout=self._timeout,
             )

@@ -35,8 +35,10 @@ class CrmService:
         clinic_name: str = "Clinic",
         clinic_timezone: str = "Asia/Kolkata",
         support_phone: str = "",
+        clinic_upi_id: str = "",
         doctor_accounts=None,
         prescriptions=None,
+        allow_demo_password: bool = False,
     ) -> None:
         self.patients = patients_tools
         self.doctors = doctors_tools
@@ -48,6 +50,7 @@ class CrmService:
         self.clinic_name = clinic_name
         self.clinic_timezone = clinic_timezone
         self.support_phone = support_phone
+        self.clinic_upi_id = clinic_upi_id
 
         if doctor_accounts is not None:
             self.doctor_accounts = doctor_accounts
@@ -56,6 +59,7 @@ class CrmService:
             self.doctor_accounts = DoctorAccountService(
                 doctor_directory=self.doctors,
                 audit_service=self.audit,
+                allow_demo_password=allow_demo_password,
             )
 
         if prescriptions is not None:
@@ -1250,6 +1254,10 @@ class CrmService:
         if not self.slots:
             raise RuntimeError("Slot repository not available")
         created = self.slots.create_slot(data)
+        if isinstance(created, dict) and "success" in created:
+            if not created.get("success"):
+                raise RuntimeError(created.get("message", "Failed to create slot"))
+            created = created.get("slot", created)
         self.invalidate_slots_cache()
         s_id = created.get("Slot ID", "") if isinstance(created, dict) else ""
         self.audit.record(
@@ -1469,7 +1477,7 @@ class CrmService:
 
         inv_data = InvoiceData(
             clinic_name=self.clinic_name,
-            clinic_phone="6200126662",
+            clinic_phone=self.support_phone or "6200126662",
             clinic_email="admin@clinic.com",
             clinic_address="Clinic Medical Plaza, Suite 101",
             patient_name=appt.get("patient_name", "Patient"),
@@ -1483,6 +1491,7 @@ class CrmService:
             amount=f"₹{appt.get('amount', '500')}",
             payment_method=appt.get("payment_method", "Offline"),
             payment_status=appt.get("payment_status", "Pending"),
+            upi_id=self.clinic_upi_id or (getattr(self.payments, "upi_id", "") if self.payments else ""),
         )
 
         out_dir = Path(__file__).resolve().parents[2] / "data" / "invoices"

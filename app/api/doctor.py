@@ -338,10 +338,15 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
     ):
         """Fetch prescription details, verifying ownership."""
         doc_id = current_doctor.get("doctor_id")
+        username = current_doctor.get("username", "doctor")
         rx = crm.prescriptions.get_prescription(prescription_id)
         if not rx:
             raise HTTPException(status_code=404, detail="Prescription not found.")
-        if rx.get("doctor_id", "").casefold() != doc_id.strip().casefold():
+        is_owner = (
+            rx.get("doctor_id", "").casefold() == doc_id.strip().casefold()
+            or (bool(rx.get("created_by")) and rx.get("created_by", "").casefold() == username.strip().casefold())
+        )
+        if not is_owner:
             raise HTTPException(status_code=403, detail="Access forbidden: You cannot view another physician's prescription.")
         return rx
 
@@ -398,10 +403,15 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
     ):
         """Generate and stream the professional prescription PDF."""
         doc_id = current_doctor.get("doctor_id")
+        username = current_doctor.get("username", "doctor")
         rx = crm.prescriptions.get_prescription(prescription_id)
         if not rx:
             raise HTTPException(status_code=404, detail="Prescription not found.")
-        if rx.get("doctor_id", "").casefold() != doc_id.strip().casefold():
+        is_owner = (
+            rx.get("doctor_id", "").casefold() == doc_id.strip().casefold()
+            or (bool(rx.get("created_by")) and rx.get("created_by", "").casefold() == username.strip().casefold())
+        )
+        if not is_owner:
             raise HTTPException(status_code=403, detail="Access forbidden: You cannot download another physician's prescription.")
 
         try:
@@ -431,10 +441,15 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
     ):
         """Email verified prescription PDF to the patient."""
         doc_id = current_doctor.get("doctor_id")
+        username = current_doctor.get("username", "doctor")
         rx = crm.prescriptions.get_prescription(prescription_id)
         if not rx:
             raise HTTPException(status_code=404, detail="Prescription not found.")
-        if rx.get("doctor_id", "").casefold() != doc_id.strip().casefold():
+        is_owner = (
+            rx.get("doctor_id", "").casefold() == doc_id.strip().casefold()
+            or (bool(rx.get("created_by")) and rx.get("created_by", "").casefold() == username.strip().casefold())
+        )
+        if not is_owner:
             raise HTTPException(status_code=403, detail="Access forbidden: You cannot email another physician's prescription.")
 
         recipient_type = (payload.recipient_type or "patient").lower().strip()

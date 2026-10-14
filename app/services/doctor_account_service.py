@@ -27,8 +27,30 @@ class DoctorAccountService:
         storage_path: Optional[Path] = None,
         doctor_directory=None,
         audit_service: Optional[AuditService] = None,
-        allow_demo_password: bool = True,
+        allow_demo_password: bool = False,
+        session_factory=None,
     ) -> None:
+        self._pg = None
+        if session_factory is not None:
+            from ..repositories.postgres_crm_repositories import PostgresDoctorAccountService
+            self._pg = PostgresDoctorAccountService(session_factory, doctor_directory=doctor_directory, audit_service=audit_service, allow_demo_password=allow_demo_password)
+        elif storage_path is None:
+            from ..db.session import is_db_configured, get_session_factory
+            if is_db_configured():
+                try:
+                    from ..repositories.postgres_crm_repositories import PostgresDoctorAccountService
+                    self._pg = PostgresDoctorAccountService(get_session_factory(), doctor_directory=doctor_directory, audit_service=audit_service, allow_demo_password=allow_demo_password)
+                except Exception:
+                    self._pg = None
+
+        if self._pg is not None:
+            self.doctor_directory = self._pg.doctor_directory
+            self.audit = self._pg.audit
+            self.allow_demo_password = self._pg.allow_demo_password
+            self._lock = self._pg._lock
+            self._accounts = {}
+            return
+
         if storage_path is None:
             root_dir = Path(__file__).resolve().parents[2]
             self.storage_path = root_dir / "data" / "doctor_accounts.json"
@@ -64,6 +86,8 @@ class DoctorAccountService:
 
     def validate_password_strength(self, password: str) -> None:
         """Validate password meets security policies unless demo password is explicitly allowed."""
+        if self._pg is not None:
+            return self._pg.validate_password_strength(password)
         if self.allow_demo_password and password == "1234":
             return
         if len(password) < 8:
@@ -82,6 +106,8 @@ class DoctorAccountService:
         admin_user: str = "admin",
     ) -> dict:
         """Create a new doctor account linked to a valid Doctor Directory record."""
+        if self._pg is not None:
+            return self._pg.create_account(username=username, password=password, doctor_id=doctor_id, email=email, admin_user=admin_user)
         norm_username = username.strip().casefold()
         if not norm_username:
             raise ValueError("Username is required.")
@@ -154,6 +180,8 @@ class DoctorAccountService:
 
     def authenticate(self, username: str, password: str) -> Optional[dict]:
         """Verify username & password. Returns account dict if valid, else None."""
+        if self._pg is not None:
+            return self._pg.authenticate(username=username, password=password)
         norm_username = username.strip().casefold()
         with self._lock:
             account = self._accounts.get(norm_username)
@@ -175,6 +203,8 @@ class DoctorAccountService:
 
     def change_password(self, username: str, old_password: str, new_password: str) -> dict:
         """Allow doctor to change their own password upon verifying their existing password."""
+        if self._pg is not None:
+            return self._pg.change_password(username=username, old_password=old_password, new_password=new_password)
         norm_username = username.strip().casefold()
         with self._lock:
             account = self._accounts.get(norm_username)
@@ -205,6 +235,8 @@ class DoctorAccountService:
 
     def reset_password(self, username: str, new_password: str, admin_user: str = "admin") -> dict:
         """Admin resets doctor password. Compulsory password change flag is re-armed."""
+        if self._pg is not None:
+            return self._pg.reset_password(username=username, new_password=new_password, admin_user=admin_user)
         norm_username = username.strip().casefold()
         with self._lock:
             account = self._accounts.get(norm_username)
@@ -232,6 +264,8 @@ class DoctorAccountService:
 
     def update_account(self, username: str, updates: dict, admin_user: str = "admin") -> dict:
         """Update doctor account profile info."""
+        if self._pg is not None:
+            return self._pg.update_account(username=username, updates=updates, admin_user=admin_user)
         norm_username = username.strip().casefold()
         with self._lock:
             account = self._accounts.get(norm_username)
@@ -273,6 +307,8 @@ class DoctorAccountService:
 
     def set_status(self, username: str, status: str, admin_user: str = "admin") -> dict:
         """Activate or deactivate a doctor account."""
+        if self._pg is not None:
+            return self._pg.set_status(username=username, status=status, admin_user=admin_user)
         norm_status = status.strip().title()
         if norm_status not in ("Active", "Inactive"):
             raise ValueError("Status must be either 'Active' or 'Inactive'.")
@@ -280,6 +316,8 @@ class DoctorAccountService:
 
     def get_account(self, username: str) -> Optional[dict]:
         """Get account details by username without password hash."""
+        if self._pg is not None:
+            return self._pg.get_account(username=username)
         norm_username = username.strip().casefold()
         with self._lock:
             acc = self._accounts.get(norm_username)
@@ -291,6 +329,8 @@ class DoctorAccountService:
 
     def get_account_by_doctor_id(self, doctor_id: str) -> Optional[dict]:
         """Find account linked to a specific doctor ID."""
+        if self._pg is not None:
+            return self._pg.get_account_by_doctor_id(doctor_id=doctor_id)
         norm_id = doctor_id.strip().casefold()
         with self._lock:
             for acc in self._accounts.values():
@@ -302,6 +342,8 @@ class DoctorAccountService:
 
     def list_accounts(self) -> list[dict]:
         """List all registered doctor accounts without password hashes."""
+        if self._pg is not None:
+            return self._pg.list_accounts()
         with self._lock:
             result = []
             for acc in self._accounts.values():

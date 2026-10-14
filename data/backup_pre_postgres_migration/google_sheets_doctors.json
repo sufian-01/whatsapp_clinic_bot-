@@ -1,0 +1,110 @@
+[
+  [
+    "Doctor ID",
+    "Doctor Name",
+    "Specialization",
+    "Qualification",
+    "Experience",
+    "Available Days",
+    "Start Time",
+    "End Time",
+    "Consultation Fee",
+    "Status"
+  ],
+  [
+    "DOC001",
+    "Dr. Arjun Mehta",
+    "General Physician",
+    "MBBS",
+    "10 years",
+    "Monday, Wednesday, Friday",
+    "10:00 AM",
+    "1:00 PM",
+    "500",
+    "Active"
+  ],
+  [
+    "DOC002",
+    "Dr. Sana Khan",
+    "Gynecologist",
+    "MBBS, MD",
+    "8 years",
+    "Tuesday, Thursday, Saturday",
+    "4:00 PM",
+    "7:00 PM",
+    "700",
+    "Inactive"
+  ],
+  [
+    "DOC003",
+    "Dr. sufian",
+    "Cardiologist",
+    "MBBS",
+    "6 years",
+    "Tuesday, Thursday, Saturday",
+    "4:00 PM",
+    "6:00 PM",
+    "900",
+    "Active"
+  ],
+  [
+    "DOC004",
+    "Dr. Neha Sharma",
+    "Dermatologist",
+    "MBBS, MD",
+    "7 years",
+    "Monday, Wednesday, Friday",
+    "11:00 AM",
+    "2:00 PM",
+    "800",
+    "Active"
+  ],
+  [
+    "DOC005",
+    "Dr. Rahul Verma",
+    "Orthopedic",
+    "MBBS, MS",
+    "9 years",
+    "Tuesday, Thursday, Saturday",
+    "10:00 AM",
+    "1:00 PM",
+    "900",
+    "Active"
+  ],
+  [
+    "DOC006",
+    "Dr. Ayesha Khan",
+    "Pediatrician",
+    "MBBS, MD",
+    "6 years",
+    "Monday, Tuesday, Thursday",
+    "3:00 PM",
+    "6:00 PM",
+    "700",
+    "Active"
+  ],
+  [
+    "DOC007",
+    "Dr. Vivek Singh",
+    "Cardiologist",
+    "MBBS, MD, DM",
+    "12 years",
+    "Wednesday, Friday, Saturday",
+    "4:00 PM",
+    "7:00 PM",
+    "1200",
+    "Active"
+  ],
+  [
+    "DOC008",
+    "Dr. Priya Gupta",
+    "Gynecologist",
+    "MBBS, MD",
+    "8 years",
+    "Monday, Wednesday, Saturday",
+    "10:00 AM",
+    "1:00 PM",
+    "800",
+    "Active"
+  ]
+]

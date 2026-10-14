@@ -37,14 +37,34 @@ export const Auth = {
     return !!this.getToken();
   },
 
-  isAdmin() {
+  getRole() {
     const user = this.getUser();
-    return user && user.role === "admin";
+    return (user && user.role) ? String(user.role).toUpperCase() : "";
+  },
+
+  isSuperAdmin() {
+    const r = this.getRole();
+    return r === "SUPER_ADMIN";
+  },
+
+  isAdmin() {
+    const r = this.getRole();
+    return r === "ADMIN" || r === "TENANT_ADMIN" || r === "SUPER_ADMIN";
   },
 
   isDoctor() {
-    const user = this.getUser();
-    return user && user.role === "doctor";
+    const r = this.getRole();
+    return r === "DOCTOR";
+  },
+
+  isReceptionist() {
+    const r = this.getRole();
+    return r === "RECEPTIONIST";
+  },
+
+  isStaff() {
+    const r = this.getRole();
+    return r === "STAFF";
   },
 
   mustChangePassword() {

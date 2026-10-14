@@ -31,6 +31,7 @@ class InvoiceData:
     payment_method: str
     payment_status: str
     qr_path: str = ""
+    upi_id: str = ""
 
 
 def generate_invoice(data: InvoiceData, output_dir: Path) -> tuple[str, Path]:
@@ -50,7 +51,8 @@ def generate_invoice(data: InvoiceData, output_dir: Path) -> tuple[str, Path]:
     table.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eaf1f8")), ("GRID", (0, 0), (-1, -1), 0.5, colors.grey), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("PADDING", (0, 0), (-1, -1), 7)]))
     story.extend([table, Spacer(1, 8 * mm), Paragraph("PAYMENT QR", styles["Heading2"]), Paragraph("Scan to pay", styles["Normal"])])
     if data.qr_path:
-        story.extend([Paragraph(f"Amount: {data.amount}<br/>UPI ID: khansyrian1@okhdfcbank", styles["Normal"]), Image(data.qr_path, width=42 * mm, height=42 * mm)])
+        upi_line = f"<br/>UPI ID: {data.upi_id}" if data.upi_id else ""
+        story.extend([Paragraph(f"Amount: {data.amount}{upi_line}", styles["Normal"]), Image(data.qr_path, width=42 * mm, height=42 * mm)])
     story.append(Paragraph("Payment Status: Pending / Pay at Clinic. After completing payment, the appointment payment status will be verified and the booking will be confirmed.", styles["Normal"]))
     document.build(story)
     return invoice_number, path

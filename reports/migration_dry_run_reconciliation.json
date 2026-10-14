@@ -1,0 +1,92 @@
+{
+  "tenant_id": "default",
+  "dry_run": true,
+  "started_at": "2026-10-13T11:24:00.617547+00:00",
+  "completed_at": "2026-10-13T11:24:06.398904+00:00",
+  "entity_counts": {
+    "clinics": {
+      "source": 1,
+      "created": 1,
+      "updated": 0,
+      "skipped": 0
+    },
+    "admin_users": {
+      "source": 2,
+      "created": 2,
+      "updated": 0,
+      "skipped": 0
+    },
+    "doctors": {
+      "source": 8,
+      "created": 8,
+      "updated": 0,
+      "skipped": 0
+    },
+    "doctor_accounts": {
+      "source": 2,
+      "created": 2,
+      "updated": 0,
+      "skipped": 0
+    },
+    "patients": {
+      "source": 10,
+      "created": 10,
+      "updated": 0,
+      "skipped": 0
+    },
+    "slots": {
+      "source": 21,
+      "created": 21,
+      "updated": 0,
+      "skipped": 0
+    },
+    "appointments": {
+      "source": 10,
+      "created": 10,
+      "updated": 0,
+      "skipped": 0
+    },
+    "invoices": {
+      "source": 10,
+      "created": 10,
+      "updated": 0,
+      "skipped": 0
+    },
+    "payments": {
+      "source": 10,
+      "created": 10,
+      "updated": 0,
+      "skipped": 0
+    },
+    "prescriptions": {
+      "source": 41,
+      "created": 41,
+      "updated": 0,
+      "skipped": 0
+    },
+    "prescription_items": {
+      "source": 41,
+      "created": 41,
+      "updated": 0,
+      "skipped": 0
+    },
+    "audit_logs": {
+      "source": 1082,
+      "created": 1082,
+      "updated": 0,
+      "skipped": 0
+    },
+    "duplicates": {
+      "appointments": 1,
+      "slots": 0,
+      "patients": 0
+    }
+  },
+  "final_database_counts": {},
+  "errors_count": 0,
+  "warnings_count": 1,
+  "errors": [],
+  "warnings": [
+    "Slot collision for Doctor d9edb42d45ca4c7b88e586aa637537b0 on 2026-10-03 10:00: token TKN-0007 collides with TKN-0006. Disambiguating appointment_time to preserve record."
+  ]
+}

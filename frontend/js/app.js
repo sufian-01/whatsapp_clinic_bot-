@@ -235,6 +235,12 @@ class App {
       return;
     }
 
+    // 1b. Super Admin has platform scope; redirect to dedicated Platform Console
+    if (Auth.isSuperAdmin()) {
+      window.location.href = "/super-admin/";
+      return;
+    }
+
     // 2. Setup user metadata in UI
     this.setupUserInfo();
 

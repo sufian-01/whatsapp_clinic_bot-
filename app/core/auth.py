@@ -114,22 +114,38 @@ def clear_failed_login(key: str) -> None:
 
 def create_session(
     username: str,
-    role: str = "admin",
+    role: str = "TENANT_ADMIN",
     expires_hours: int = 24,
     doctor_id: str = "",
     doctor_name: str = "",
     must_change_password: bool = False,
+    tenant_id: str = "",
+    clinic_id: str = "",
+    user_id: str = "",
+    email: str = "",
+    is_active: bool = True,
 ) -> str:
     """Generate a cryptographically secure session token and store session metadata."""
+    from .rbac import UserRole
+    norm_role = UserRole.normalize(role).value
+
     token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=expires_hours)
+    tid = tenant_id or clinic_id or "default"
     session_data = {
+        "user_id": user_id or f"usr_{secrets.token_hex(6)}",
         "username": username,
-        "role": role,
+        "email": email,
+        "role": str(role),
+        "normalized_role": norm_role,
         "doctor_id": doctor_id,
         "doctor_name": doctor_name,
         "must_change_password": must_change_password,
+        "tenant_id": tid,
+        "clinic_id": tid,
+        "is_active": is_active,
+        "status": "Active" if is_active else "Inactive",
         "created_at": now.isoformat(),
         "expires_at": expires_at.isoformat(),
         "timestamp": expires_at.timestamp(),
@@ -178,7 +194,8 @@ async def get_current_user(
 ) -> dict:
     """FastAPI dependency: Authenticate any valid user via Bearer token or cookie.
 
-    Raises 401 if missing, invalid, or expired.
+    Validates expiry, inactive status, and binds authoritative tenant context.
+    Raises 401 if missing, invalid, expired, or inactive.
     """
     token = None
     if credentials:
@@ -202,19 +219,49 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if session.get("is_active") is False or str(session.get("status", "")).strip().casefold() in ("inactive", "suspended"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is inactive or suspended. Please contact clinic administration.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     session_data = dict(session)
     session_data["token"] = token
+
+    # Bind tenant context automatically from authenticated identity
+    tenant_id = session_data.get("tenant_id") or session_data.get("clinic_id")
+    if tenant_id:
+        from .tenant import TenantContext, set_current_tenant
+        from .config import get_settings
+        cfg = get_settings()
+        if str(tenant_id).casefold() == "platform":
+            c_name = "Platform"
+        else:
+            c_name = session_data.get("clinic_name") or cfg.clinic_name
+        set_current_tenant(
+            TenantContext(
+                tenant_id=tenant_id,
+                clinic_name=c_name,
+                timezone=cfg.clinic_timezone,
+                is_active=True,
+                is_default=(tenant_id == "default"),
+            )
+        )
+
     return session_data
 
 
 async def get_current_admin(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """FastAPI dependency: Authenticate that current user has ADMIN role.
+    """FastAPI dependency: Authenticate that current user has TENANT_ADMIN or SUPER_ADMIN role.
 
     Raises 403 if user is not an administrator.
     """
-    if current_user.get("role") != "admin":
+    from .rbac import UserRole
+    user_role = UserRole.normalize(current_user.get("role", ""))
+    if user_role not in (UserRole.TENANT_ADMIN, UserRole.SUPER_ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden: Administrator privileges required.",
@@ -229,7 +276,9 @@ async def get_current_doctor(
 
     Raises 403 if user is not a verified doctor.
     """
-    if current_user.get("role") != "doctor":
+    from .rbac import UserRole
+    user_role = UserRole.normalize(current_user.get("role", ""))
+    if user_role != UserRole.DOCTOR:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden: Doctor privileges required.",
@@ -240,11 +289,32 @@ async def get_current_doctor(
 async def get_current_admin_or_doctor(
     current_user: dict = Depends(get_current_user),
 ) -> dict:
-    """FastAPI dependency: Authenticate that current user is either ADMIN or DOCTOR."""
-    if current_user.get("role") not in ("admin", "doctor"):
+    """FastAPI dependency: Authenticate that current user is either TENANT_ADMIN, SUPER_ADMIN, or DOCTOR."""
+    from .rbac import UserRole
+    user_role = UserRole.normalize(current_user.get("role", ""))
+    if user_role not in (UserRole.TENANT_ADMIN, UserRole.SUPER_ADMIN, UserRole.DOCTOR):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden: Clinical staff or administrator privileges required.",
         )
     return current_user
+
+
+# Re-exports for clean imports
+from .rbac import (
+    Permission,
+    UserRole,
+    has_permission,
+    require_admin_or_doctor,
+    require_authenticated_user,
+    require_clinical_or_admin,
+    require_doctor,
+    require_patient,
+    require_permission,
+    require_receptionist,
+    require_role,
+    require_staff,
+    require_super_admin,
+    require_tenant_admin,
+)
 

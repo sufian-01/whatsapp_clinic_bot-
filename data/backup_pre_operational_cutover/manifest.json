@@ -1,0 +1,65 @@
+{
+  "timestamp": "20261013_151910",
+  "database": "clinic_db",
+  "tables": {
+    "clinics": {
+      "count": 1,
+      "file": "clinics.json",
+      "sha256": "cd143929691384b056f08fe4565d905e40b6264dec7e53f067b79d3f9b57af91"
+    },
+    "users": {
+      "count": 4,
+      "file": "users.json",
+      "sha256": "f3cd9d460684099833fd26b8f1a58c44c9b0525ef7ba83c33d6300711d7a9efc"
+    },
+    "doctors": {
+      "count": 8,
+      "file": "doctors.json",
+      "sha256": "19cd53f7b4d5f19aa153bc95adbb534fe44f6aa786a44cd44ae0b50a2261d75f"
+    },
+    "patients": {
+      "count": 12,
+      "file": "patients.json",
+      "sha256": "f5f3039d3eabac48ff54e0177bc7694c9051525e091dc1d069a119d2cee6ee8f"
+    },
+    "appointment_slots": {
+      "count": 21,
+      "file": "appointment_slots.json",
+      "sha256": "b099e1e38afeb53e61489ac184134810250feee9f0620de5157343960165a9e9"
+    },
+    "appointments": {
+      "count": 10,
+      "file": "appointments.json",
+      "sha256": "f4c896469f3a8e52db9f42f35121c845aa051b54a61d640ddb375663759348b4"
+    },
+    "invoices": {
+      "count": 10,
+      "file": "invoices.json",
+      "sha256": "0fa03fe66d04d65ff9a74d30ecc8b08128650a552d7fcd6489ccbc0e463c7448"
+    },
+    "payments": {
+      "count": 10,
+      "file": "payments.json",
+      "sha256": "034d84c0fc2b8b609782279dddf46149912ae7e1923ce1d8f4d97a3e67755f2b"
+    },
+    "prescriptions": {
+      "count": 41,
+      "file": "prescriptions.json",
+      "sha256": "f43f3fe8c7016a3789d021e373b4e753fe057170eed007254f647db828964913"
+    },
+    "prescription_items": {
+      "count": 41,
+      "file": "prescription_items.json",
+      "sha256": "a2767c37b9aac30f2a437b38bf7dc673023a1d5907561fdd35393a6abf765d78"
+    },
+    "audit_logs": {
+      "count": 1082,
+      "file": "audit_logs.json",
+      "sha256": "c9624564891aed28d0aa62da9aee2ecc56f34f00f0e14cf032c30fa9cabae27b"
+    }
+  },
+  "sql_dump": {
+    "file": "clinic_db_20261013_151910.sql",
+    "size_bytes": 400721
+  }
+}

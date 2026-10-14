@@ -25,7 +25,27 @@ class AuditEntry:
 
 
 class AuditService:
-    def __init__(self, log_file: Optional[Path] = None, max_memory_entries: int = 2000) -> None:
+    def __init__(self, log_file: Optional[Path] = None, max_memory_entries: int = 2000, session_factory=None) -> None:
+        self._pg = None
+        if session_factory is not None:
+            from ..repositories.postgres_crm_repositories import PostgresAuditService
+            self._pg = PostgresAuditService(session_factory, max_memory_entries=max_memory_entries)
+        elif log_file is None:
+            from ..db.session import is_db_configured, get_session_factory
+            if is_db_configured():
+                try:
+                    from ..repositories.postgres_crm_repositories import PostgresAuditService
+                    self._pg = PostgresAuditService(get_session_factory(), max_memory_entries=max_memory_entries)
+                except Exception:
+                    self._pg = None
+
+        if self._pg is not None:
+            self.log_file = log_file or Path("data/audit_logs.jsonl")
+            self.max_memory_entries = self._pg.max_memory_entries
+            self._lock = self._pg._lock
+            self._entries = self._pg._entries
+            return
+
         if log_file is None:
             # Default to data/audit_logs.jsonl relative to project root
             root_dir = Path(__file__).resolve().parents[2]
@@ -66,6 +86,8 @@ class AuditService:
         details: Optional[dict] = None,
     ) -> dict:
         """Record an immutable audit log entry."""
+        if self._pg is not None:
+            return self._pg.record(user=user, action=action, entity_type=entity_type, entity_id=entity_id, details=details)
         now = datetime.now(timezone.utc).isoformat()
         entry = {
             "id": f"AUD-{uuid4().hex[:12].upper()}",
@@ -102,6 +124,8 @@ class AuditService:
         offset: int = 0,
     ) -> dict:
         """Query audit logs with filtering and pagination (newest first)."""
+        if self._pg is not None:
+            return self._pg.get_logs(action=action, entity_type=entity_type, entity_id=entity_id, limit=limit, offset=offset)
         with self._lock:
             records = list(self._entries)
 

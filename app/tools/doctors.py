@@ -334,6 +334,14 @@ class DoctorDirectory:
         if not doctors:
             return {"status": "not_found", "matches": []}
 
+        # Check by Doctor ID (e.g. DOC-001 or doctor:DOC-001)
+        raw_clean = text.strip().upper()
+        clean_id = raw_clean.removeprefix("DOCTOR:").removeprefix("DOC:").strip()
+        for d in doctors:
+            doc_id = (d.get("Doctor ID") or "").strip().upper()
+            if doc_id and doc_id in (raw_clean, clean_id):
+                return {"status": "matched", "doctor": d, "score": 1.0, "matches": [d]}
+
         normalized_text = normalize_doctor_text(text)
 
         # Exact match first

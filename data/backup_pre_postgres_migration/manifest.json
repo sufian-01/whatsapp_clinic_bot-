@@ -1,0 +1,13 @@
+{
+  "timestamp": "20261013_111707",
+  "backup_directory": "D:\\telegram_bot\\data\\backup_pre_postgres_migration",
+  "files": [
+    "audit_logs.jsonl",
+    "doctor_accounts.json",
+    "doctor_demo_credentials.local.json",
+    "google_sheets_doctors.json",
+    "google_sheets_patients.json",
+    "google_sheets_slots.json",
+    "prescriptions.json"
+  ]
+}

@@ -1,6 +1,9 @@
 """Routing helpers for the conversational graph."""
 
+import logging
 from ..tools.doctors import match_health_concern
+
+logger = logging.getLogger(__name__)
 
 # Specialization terms that can appear in a doctor-list query
 _SPECIALIZATION_TERMS = (
@@ -60,19 +63,66 @@ def classify_intent(state: dict) -> dict:
         return {**state, "intent": "doctor_list"}
 
     # 9. Booking intent
-    if any(term in text for term in ("book", "appointment", "schedule", "consult")):
+    if _is_booking_query(text):
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_booking'", text)
         return {**state, "intent": "appointment_booking"}
 
     # 10. Doctor information lookup
     if any(term in text for term in ("doctor", "doctors", "dr", "dr.", "physician", "gynecologist", "specialist")):
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'doctor_information'", text)
         return {**state, "intent": "doctor_information"}
 
     # 11. General clinic information
     is_clinic_info = any(term in text for term in ("clinic", "hours", "timing", "address", "where", "location", "kahan", "service", "test", "price"))
     if is_clinic_info:
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'clinic_information'", text)
         return {**state, "intent": "clinic_information"}
 
+    logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'other_help'", text)
     return {**state, "intent": "other_help"}
+
+
+def _is_booking_query(text: str) -> bool:
+    """True if user wants to book an appointment, consult a doctor, or reserve a slot."""
+    import re
+    lowered = text.casefold()
+
+    # Rule out queries that clearly belong to other intents
+    if _is_reschedule_query(lowered) or _is_cancel_query(lowered):
+        return False
+    if any(q in lowered for q in ("policy", "rules", "rule", "fee", "fees", "charge", "charges", "hours", "timing", "address", "location")):
+        return False
+
+    # 1. Direct booking / consultation keywords & common typos of appointment
+    booking_terms = (
+        "book", "booking", "schedule", "consult", "consultation",
+        "appointment", "appoinment", "apointment", "appointmnt", "apointmnt",
+        "apmnt", "appmnt", "apt",
+    )
+    if any(term in lowered for term in booking_terms):
+        return True
+
+    # 2. Hinglish & Hindi booking requests
+    hinglish_booking_phrases = (
+        "dikhana hai", "dikhana chahta", "dikhana chahti", "dikhao",
+        "milna hai", "milna chahta", "milna chahti",
+        "checkup karana", "checkup karani",
+        "appointment lena", "appoinment lena", "booking lena",
+        "appointment kar do", "appoinment kar do", "booking kar do",
+        "slot chahiye", "appointment chahiye", "appoinment chahiye", "booking chahiye",
+    )
+    if any(phrase in lowered for phrase in hinglish_booking_phrases):
+        return True
+
+    # 3. Regex patterns: e.g. "doctor ko dikhana", "slot chahiye"
+    if re.search(r"\b(doctor|dr|specialist)\b.*\b(dikhana|dikhao|milna|checkup)\b", lowered):
+        return True
+    if re.search(r"\b(slot|token|tkn)\b.*\b(chahiye|book|karna|karni|lena|leni|kar do)\b", lowered):
+        return True
+    if re.search(r"\b(chahiye|karna|karni|lena|leni)\b.*\b(slot|token|tkn)\b", lowered):
+        return True
+
+    return False
 
 
 def _is_reschedule_query(text: str) -> bool:

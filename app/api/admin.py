@@ -197,7 +197,41 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
                 detail=f"Account is temporarily locked due to multiple failed login attempts. Try again in {secs} seconds.",
             )
 
-        # 2. Check Admin Credentials
+        # 2. Check Super Admin Credentials
+        super_user = settings.super_admin_username or "superadmin"
+        if credentials.username.strip().casefold() == super_user.casefold():
+            super_pw_valid = False
+            if settings.super_admin_password_hash:
+                super_pw_valid = verify_password(credentials.password, settings.super_admin_password_hash)
+            elif settings.super_admin_password:
+                super_pw_valid = (credentials.password == settings.super_admin_password)
+
+            if super_pw_valid:
+                clear_failed_login(credentials.username)
+                token = create_session(
+                    username=super_user,
+                    role="SUPER_ADMIN",
+                    tenant_id="platform",
+                    expires_hours=settings.crm_token_expire_hours,
+                )
+                response.set_cookie(
+                    key="admin_session",
+                    value=token,
+                    httponly=True,
+                    samesite="lax",
+                    max_age=settings.crm_token_expire_hours * 3600,
+                )
+                return LoginResponse(
+                    token=token,
+                    username=super_user,
+                    role="SUPER_ADMIN",
+                    clinic_name="Platform",
+                    doctor_id=None,
+                    doctor_name=None,
+                    must_change_password=False,
+                )
+
+        # 3. Check Clinic Admin Credentials
         expected_user = settings.crm_admin_username or "admin"
         username_match = credentials.username.strip().casefold() == expected_user.casefold()
 
@@ -287,10 +321,16 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
     @router.get("/auth/me", response_model=AdminProfile)
     async def me(current_user: dict = Depends(get_current_user)):
         """Return authenticated user profile."""
+        user_role = str(current_user.get("role", "")).upper()
+        if user_role == "SUPER_ADMIN":
+            c_name = "Platform"
+        else:
+            c_name = current_user.get("clinic_name") or settings.clinic_name
+
         return AdminProfile(
             username=current_user.get("username", "admin"),
             role=current_user.get("role", "admin"),
-            clinic_name=settings.clinic_name,
+            clinic_name=c_name,
             doctor_id=current_user.get("doctor_id"),
             doctor_name=current_user.get("doctor_name"),
             must_change_password=current_user.get("must_change_password", False),

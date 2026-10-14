@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Platform Super Admin Login | Multi-Tenant Clinic SaaS</title>
+  <script>try{var t=localStorage.getItem('crm_theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+  <link rel="stylesheet" href="../css/variables.css">
+  <link rel="stylesheet" href="../css/base.css">
+  <link rel="stylesheet" href="../css/components.css">
+  <link rel="stylesheet" href="../css/views.css">
+  <style>
+    .login-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1.5rem;
+      background: var(--bg-app);
+    }
+    .platform-card {
+      width: 100%;
+      max-width: 440px;
+      padding: 2.5rem;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-xl);
+    }
+    .platform-badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #fff;
+      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+      border-radius: 9999px;
+      margin-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <div class="platform-card">
+      <div style="text-align: center; margin-bottom: 2rem;">
+        <span class="platform-badge">Platform Console</span>
+        <h1 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem;">Super Admin Portal</h1>
+        <p style="color: var(--text-secondary); font-size: 0.875rem;">Manage multi-tenant clinics, facilities, and platform configuration</p>
+      </div>
+
+      <div id="alertBox" style="display: none; padding: 0.75rem; border-radius: var(--radius-md); margin-bottom: 1rem; font-size: 0.875rem; background: #fee2e2; color: #b91c1c; border: 1px solid #f87171;"></div>
+
+      <form id="loginForm">
+        <div class="form-group" style="margin-bottom: 1.25rem;">
+          <label class="form-label" for="username">Platform Username</label>
+          <input class="form-control" type="text" id="username" name="username" placeholder="superadmin" required autofocus>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 1.75rem;">
+          <label class="form-label" for="password">Platform Password</label>
+          <input class="form-control" type="password" id="password" name="password" placeholder="••••••••" required>
+        </div>
+
+        <button type="submit" id="submitBtn" class="btn btn-primary" style="width: 100%; justify-content: center;">
+          Sign In to Platform
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const alertBox = document.getElementById('alertBox');
+    const submitBtn = document.getElementById('submitBtn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      alertBox.style.display = 'none';
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Authenticating...';
+
+      try {
+        const res = await fetch('/api/super-admin/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: form.username.value.trim(),
+            password: form.password.value,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Login failed.');
+        }
+
+        localStorage.setItem('super_admin_token', data.token);
+        localStorage.setItem('super_admin_user', JSON.stringify(data));
+        window.location.href = '/super-admin/';
+      } catch (err) {
+        alertBox.textContent = err.message;
+        alertBox.style.display = 'block';
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign In to Platform';
+      }
+    });
+  </script>
+</body>
+</html>

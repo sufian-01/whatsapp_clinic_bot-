@@ -97,16 +97,53 @@ def create_app() -> FastAPI:
     validate_settings(settings)
     rag = RagService(settings.knowledge_dir, settings.vectorstore_dir)
     llm = GeminiClient(settings.gemini_api_key, settings.gemini_model)
-    patients, slots = _build_sheet_repositories(settings)
-    doctor_directory = _build_doctor_directory(settings)
     email_sender = _build_email_sender()
-
-    patient_tools = PatientTools(patients) if patients else None
-    doctor_tools = DoctorTools(doctor_directory) if doctor_directory else None
-    slot_tools = AppointmentTools(slots) if slots else None
-    payment_tools = PaymentTools()
     invoice_tools = InvoiceTools()
     gmail_tools = GmailTools(email_sender)
+
+    from .db.session import is_db_configured, get_session_factory, get_engine
+    if is_db_configured():
+        # Fail-fast check: ensure PostgreSQL is healthy and accessible at startup
+        from sqlalchemy import text
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+        session_factory = get_session_factory()
+        from .repositories.postgres_crm_repositories import (
+            PostgresPatientRepository,
+            PostgresDoctorDirectory,
+            PostgresSlotRepository,
+            PostgresPrescriptionService,
+            PostgresDoctorAccountService,
+            PostgresAuditService,
+            PostgresPaymentRepository,
+        )
+        patient_repo = PostgresPatientRepository(session_factory)
+        patient_tools = PatientTools(patient_repo)
+        doctor_dir = PostgresDoctorDirectory(session_factory)
+        doctor_tools = DoctorTools(doctor_dir)
+        slot_repo = PostgresSlotRepository(session_factory)
+        slot_tools = AppointmentTools(slot_repo)
+        payment_tools = PostgresPaymentRepository(session_factory, upi_id=settings.clinic_upi_id)
+        audit_service = PostgresAuditService(session_factory)
+        prescriptions = PostgresPrescriptionService(session_factory, audit_service=audit_service)
+        doctor_accounts = PostgresDoctorAccountService(
+            session_factory,
+            doctor_directory=doctor_tools,
+            audit_service=audit_service,
+            allow_demo_password=settings.allow_demo_password,
+        )
+    else:
+        patients, slots = _build_sheet_repositories(settings)
+        doctor_directory = _build_doctor_directory(settings)
+        patient_tools = PatientTools(patients) if patients else None
+        doctor_tools = DoctorTools(doctor_directory) if doctor_directory else None
+        slot_tools = AppointmentTools(slots) if slots else None
+        payment_tools = PaymentTools(upi_id=settings.clinic_upi_id)
+        audit_service = None
+        prescriptions = None
+        doctor_accounts = None
 
     crm_service = CrmService(
         patients_tools=patient_tools,
@@ -115,9 +152,14 @@ def create_app() -> FastAPI:
         payments_tools=payment_tools,
         invoices_tools=invoice_tools,
         gmail_tools=gmail_tools,
+        audit_service=audit_service,
         clinic_name=settings.clinic_name,
         clinic_timezone=settings.clinic_timezone,
         support_phone=settings.support_phone,
+        clinic_upi_id=settings.clinic_upi_id,
+        doctor_accounts=doctor_accounts,
+        prescriptions=prescriptions,
+        allow_demo_password=settings.allow_demo_password,
     )
 
     graph = build_graph(GraphNodes(
@@ -188,12 +230,46 @@ def create_app() -> FastAPI:
     app.include_router(create_webhook_router(settings, graph, bot, sarvam))
     app.include_router(create_knowledge_router(settings.knowledge_dir / "uploads", rag))
 
+    # 1b. Meta WhatsApp Cloud API Channel Router
+    from .channels.whatsapp.client import MetaWhatsAppClient
+    from .channels.whatsapp.handler import WhatsAppHandler
+    from .channels.whatsapp.router import create_whatsapp_router
+
+    whatsapp_client = MetaWhatsAppClient(
+        access_token=settings.whatsapp_access_token,
+        api_version=settings.whatsapp_api_version,
+        phone_number_id=settings.whatsapp_phone_number_id,
+        default_country_code=settings.whatsapp_default_country_code,
+    )
+    whatsapp_repo = None
+    if is_db_configured():
+        from .repositories.whatsapp_repository import WhatsAppRepository
+        whatsapp_repo = WhatsAppRepository(session_factory)
+
+    whatsapp_handler = WhatsAppHandler(
+        settings=settings,
+        graph=graph,
+        client=whatsapp_client,
+        repository=whatsapp_repo,
+        audit_service=crm_service.audit,
+        sarvam=sarvam,
+    )
+    app.include_router(create_whatsapp_router(settings, whatsapp_handler))
+
     # 2. CRM Admin Service & API Router
     from .api.doctor import create_doctor_router
     app.include_router(create_admin_router(crm_service, settings))
     app.include_router(create_doctor_router(crm_service, settings))
 
-    # 3. Mount CRM Frontend static files
+    # 3. Super Admin & Platform Tenant Management Service & Router
+    from .services.tenant_management_service import TenantManagementService
+    from .api.super_admin import create_super_admin_router
+    from .db.session import is_db_configured, get_session_factory, get_engine
+    session_factory = get_session_factory() if is_db_configured() else None
+    tenant_mgmt_service = TenantManagementService(audit_service=crm_service.audit, session_factory=session_factory)
+    app.include_router(create_super_admin_router(tenant_mgmt_service, settings))
+
+    # 4. Mount CRM & Super Admin Frontend static files
     frontend_dir = ROOT_DIR / "frontend"
     if frontend_dir.exists():
         @app.get("/admin", include_in_schema=False)
@@ -201,6 +277,14 @@ def create_app() -> FastAPI:
             return RedirectResponse(url="/admin/")
 
         app.mount("/admin", StaticFiles(directory=str(frontend_dir), html=True), name="admin")
+
+        super_admin_dir = frontend_dir / "super-admin"
+        if super_admin_dir.exists():
+            @app.get("/super-admin", include_in_schema=False)
+            async def super_admin_redirect():
+                return RedirectResponse(url="/super-admin/")
+
+            app.mount("/super-admin", StaticFiles(directory=str(super_admin_dir), html=True), name="super-admin")
 
     @app.get("/health")
     async def health(details: bool = False) -> dict:
@@ -211,6 +295,15 @@ def create_app() -> FastAPI:
                 "clinic": settings.clinic_name,
                 "rag_available": rag.is_available(),
             })
+            if is_db_configured():
+                try:
+                    from sqlalchemy import text
+                    engine = get_engine()
+                    with engine.connect() as conn:
+                        conn.execute(text("SELECT 1"))
+                    data["database"] = {"status": "connected", "type": "postgresql"}
+                except Exception as e:
+                    data["database"] = {"status": "error", "error": type(e).__name__}
             try:
                 import shutil
                 total, used, free = shutil.disk_usage(".")

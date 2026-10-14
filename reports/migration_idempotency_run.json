@@ -1,0 +1,104 @@
+{
+  "tenant_id": "default",
+  "dry_run": false,
+  "started_at": "2026-10-13T11:25:00.331919+00:00",
+  "completed_at": "2026-10-13T11:25:05.187937+00:00",
+  "entity_counts": {
+    "clinics": {
+      "source": 1,
+      "created": 0,
+      "updated": 0,
+      "skipped": 1
+    },
+    "admin_users": {
+      "source": 2,
+      "created": 0,
+      "updated": 0,
+      "skipped": 2
+    },
+    "doctors": {
+      "source": 8,
+      "created": 0,
+      "updated": 8,
+      "skipped": 0
+    },
+    "doctor_accounts": {
+      "source": 2,
+      "created": 0,
+      "updated": 2,
+      "skipped": 0
+    },
+    "patients": {
+      "source": 10,
+      "created": 0,
+      "updated": 10,
+      "skipped": 0
+    },
+    "slots": {
+      "source": 21,
+      "created": 0,
+      "updated": 21,
+      "skipped": 0
+    },
+    "appointments": {
+      "source": 10,
+      "created": 0,
+      "updated": 10,
+      "skipped": 0
+    },
+    "invoices": {
+      "source": 10,
+      "created": 0,
+      "updated": 10,
+      "skipped": 0
+    },
+    "payments": {
+      "source": 10,
+      "created": 0,
+      "updated": 10,
+      "skipped": 0
+    },
+    "prescriptions": {
+      "source": 41,
+      "created": 0,
+      "updated": 41,
+      "skipped": 0
+    },
+    "prescription_items": {
+      "source": 41,
+      "created": 41,
+      "updated": 0,
+      "skipped": 0
+    },
+    "audit_logs": {
+      "source": 1082,
+      "created": 0,
+      "updated": 0,
+      "skipped": 1082
+    },
+    "duplicates": {
+      "appointments": 1,
+      "slots": 0,
+      "patients": 0
+    }
+  },
+  "final_database_counts": {
+    "clinics": 1,
+    "users": 4,
+    "doctors": 8,
+    "patients": 12,
+    "appointment_slots": 21,
+    "appointments": 10,
+    "prescriptions": 41,
+    "prescription_items": 82,
+    "invoices": 10,
+    "payments": 10,
+    "audit_logs": 1082
+  },
+  "errors_count": 0,
+  "warnings_count": 1,
+  "errors": [],
+  "warnings": [
+    "Slot collision for Doctor 4fc893efa2474b84be68de115c27e59a on 2026-10-03 10:00: token TKN-0007 collides with TKN-0006. Disambiguating appointment_time to preserve record."
+  ]
+}

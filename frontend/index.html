@@ -3,7 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script>try{var t=localStorage.getItem('crm_theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+  <script>
+    try {
+      var t = localStorage.getItem('crm_theme');
+      if (t) document.documentElement.setAttribute('data-theme', t);
+      var u = localStorage.getItem('crm_admin_user');
+      if (u) {
+        var parsed = JSON.parse(u);
+        if (parsed && String(parsed.role || '').toUpperCase() === 'SUPER_ADMIN') {
+          window.location.href = '/super-admin/';
+        }
+      }
+    } catch (e) {}
+  </script>
   <title>Clinic CRM — Admin & Doctor Portal</title>
   <link rel="stylesheet" href="css/variables.css" />
   <link rel="stylesheet" href="css/base.css" />

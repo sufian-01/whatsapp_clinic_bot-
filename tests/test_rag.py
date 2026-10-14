@@ -121,14 +121,18 @@ class RagTests(unittest.TestCase):
 
     def test_knowledge_upload_returns_503_when_faiss_unavailable(self):
         """Upload endpoint returns HTTP 503 instead of crashing or raising unhandled 500."""
+        from app.core.auth import create_session
+
         with patch("app.rag.vectorstore.get_faiss", return_value=None):
             from app.main import create_app
             app = create_app()
             client = TestClient(app)
 
+            token = create_session("admin", role="admin")
             fake_pdf = io.BytesIO(b"%PDF-1.4 fake pdf content")
             response = client.post(
                 "/api/v1/knowledge/upload",
+                headers={"Authorization": f"Bearer {token}"},
                 files={"file": ("guide.pdf", fake_pdf, "application/pdf")},
             )
             self.assertEqual(response.status_code, 503)

@@ -8,6 +8,13 @@ import qrcode
 
 
 class PaymentTools:
+    def __init__(self, upi_id: str = "") -> None:
+        self._upi_id = upi_id
+
+    @property
+    def upi_id(self) -> str:
+        return self._upi_id
+
     def create_online_payment(self, amount: str) -> dict:
         return {"success": False, "status": "NOT_IMPLEMENTED", "message": "Online payment will be available soon."}
 
@@ -25,7 +32,7 @@ class PaymentTools:
             numeric_amount = Decimal(str(amount).replace(",", "").replace("₹", "").strip())
             if numeric_amount <= 0:
                 raise InvalidOperation
-            upi_id = "khansyrian1@okhdfcbank"
+            upi_id = self._upi_id
             uri = "upi://pay?" + urlencode({"pa": upi_id, "pn": clinic_name, "am": f"{numeric_amount:.2f}", "cu": "INR", "tr": reference})
             output_dir.mkdir(parents=True, exist_ok=True)
             path = output_dir / f"{reference}-upi.png"

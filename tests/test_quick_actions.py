@@ -1,10 +1,18 @@
 import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
+import urllib.request
+import pytest
 from playwright.sync_api import sync_playwright
 import time
 
 def test_quick_actions():
+    try:
+        with urllib.request.urlopen("http://localhost:8000/health", timeout=0.5):
+            pass
+    except Exception:
+        pytest.skip("Local test server is not running on http://localhost:8000")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 1280, "height": 800})
