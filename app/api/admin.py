@@ -1,5 +1,6 @@
 """FastAPI Admin API router for the Clinic CRM Dashboard & CMS."""
 
+import math
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -792,11 +793,27 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
         date: str = Query("", max_length=20),
         doctor: str = Query("", max_length=100),
         status: str = Query("", max_length=50),
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(None, ge=1, le=200),
         current_admin: dict = Depends(get_current_admin),
     ):
-        """List appointment slots with optional filters."""
+        """List appointment slots with optional filters and optional pagination."""
         try:
-            return crm.list_slots(date_filter=date, doctor_filter=doctor, status_filter=status)
+            slots = crm.list_slots(date_filter=date, doctor_filter=doctor, status_filter=status)
+            if page is not None:
+                p_size = page_size or 25
+                total = len(slots)
+                total_pages = math.ceil(total / p_size) if p_size > 0 else 1
+                start = (page - 1) * p_size
+                end = start + p_size
+                return {
+                    "slots": slots[start:end],
+                    "total": total,
+                    "page": page,
+                    "page_size": p_size,
+                    "total_pages": total_pages,
+                }
+            return slots
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to list slots: {err}")
 
@@ -964,17 +981,27 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
         entity_id: Optional[str] = Query(None, max_length=50),
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(None, ge=1, le=200),
         current_admin: dict = Depends(get_current_admin),
     ):
-        """Query immutable audit log entries."""
+        """Query immutable audit log entries with optional page-based pagination."""
         try:
-            return crm.audit.get_logs(
+            eff_limit = page_size if page_size is not None else limit
+            eff_offset = ((page - 1) * eff_limit) if page is not None else offset
+            res = crm.audit.get_logs(
                 action=action,
                 entity_type=entity_type,
                 entity_id=entity_id,
-                limit=limit,
-                offset=offset,
+                limit=eff_limit,
+                offset=eff_offset,
             )
+            if page is not None:
+                total = res.get("total", 0)
+                res["page"] = page
+                res["page_size"] = eff_limit
+                res["total_pages"] = math.ceil(total / eff_limit) if eff_limit > 0 else 1
+            return res
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to fetch audit logs: {err}")
 
@@ -1096,11 +1123,13 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
         status: Optional[str] = None,
         date: Optional[str] = None,
         search: Optional[str] = None,
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(None, ge=1, le=100),
         current_admin: dict = Depends(get_current_admin),
     ):
         """Admin overview of all prescriptions across the clinic."""
         if not crm.prescriptions:
-            return []
+            return {"prescriptions": [], "total": 0, "page": 1, "page_size": 20, "total_pages": 1} if page is not None else []
         try:
             return crm.prescriptions.list_prescriptions(
                 doctor_id=doctor_id,
@@ -1109,6 +1138,8 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
                 status=status,
                 date_filter=date,
                 search=search,
+                page=page,
+                page_size=page_size or 20,
             )
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to list prescriptions: {err}")

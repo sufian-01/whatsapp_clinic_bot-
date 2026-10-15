@@ -17,6 +17,10 @@ export const DoctorPrescriptionsView = {
   isDirty: false,
   lastSavedText: "",
   patientHistory: [],
+  page: 1,
+  pageSize: 15,
+  total: 0,
+  totalPages: 1,
   _abortController: null,
 
   async init() {
@@ -119,17 +123,46 @@ export const DoctorPrescriptionsView = {
             </tbody>
           </table>
         </div>
+        <div id="doc-rx-pagination-bar" class="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border-light); background: var(--bg-surface);">
+          <div id="doc-rx-page-info" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">
+            Showing 0 prescriptions
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button id="doc-rx-prev-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">&larr; Previous</button>
+            <span id="doc-rx-page-num" style="font-size: 13px; font-weight: 600; padding: 0 6px;">Page 1 of 1</span>
+            <button id="doc-rx-next-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">Next &rarr;</button>
+          </div>
+        </div>
       </div>
     `;
 
     document.getElementById("doc-rx-refresh-btn")?.addEventListener("click", () => this.loadData());
-    document.getElementById("doc-rx-search")?.addEventListener("input", debounce(() => this.loadData(), 250));
-    document.getElementById("doc-rx-status-filter")?.addEventListener("change", () => this.loadData());
+    document.getElementById("doc-rx-search")?.addEventListener("input", debounce(() => {
+      this.page = 1;
+      this.loadData();
+    }, 250));
+    document.getElementById("doc-rx-status-filter")?.addEventListener("change", () => {
+      this.page = 1;
+      this.loadData();
+    });
+    document.getElementById("doc-rx-prev-btn")?.addEventListener("click", () => {
+      if (this.page > 1) {
+        this.page -= 1;
+        this.loadData();
+      }
+    });
+    document.getElementById("doc-rx-next-btn")?.addEventListener("click", () => {
+      if (this.page < this.totalPages) {
+        this.page += 1;
+        this.loadData();
+      }
+    });
     document.getElementById("doc-rx-reset-filter")?.addEventListener("click", () => {
       const q = document.getElementById("doc-rx-search");
       const st = document.getElementById("doc-rx-status-filter");
       if (q) q.value = "";
       if (st) st.value = "";
+      this.page = 1;
       this.loadData();
     });
 
@@ -155,12 +188,25 @@ export const DoctorPrescriptionsView = {
     }
 
     try {
-      const list = await API.getDoctorPrescriptions({
+      const res = await API.getDoctorPrescriptions({
         search,
         status: statusVal,
+        page: this.page,
+        page_size: this.pageSize,
       }, { signal: this._abortController.signal });
-      this.prescriptions = Array.isArray(list) ? list : (list.prescriptions || []);
+
+      if (res && res.prescriptions) {
+        this.prescriptions = res.prescriptions;
+        this.total = res.total || 0;
+        this.page = res.page || 1;
+        this.totalPages = res.total_pages || 1;
+      } else {
+        this.prescriptions = Array.isArray(res) ? res : [];
+        this.total = this.prescriptions.length;
+        this.totalPages = 1;
+      }
       this.renderTable(this.prescriptions);
+      this.updatePaginationUI();
     } catch (err) {
       if (err.name === "AbortError") return;
       console.error("Doctor prescriptions error:", err);
@@ -176,6 +222,28 @@ export const DoctorPrescriptionsView = {
         `;
         document.getElementById("doc-rx-retry-btn")?.addEventListener("click", () => this.loadData());
       }
+    }
+  },
+
+  updatePaginationUI() {
+    const pageInfo = document.getElementById("doc-rx-page-info");
+    const pageNum = document.getElementById("doc-rx-page-num");
+    const prevBtn = document.getElementById("doc-rx-prev-btn");
+    const nextBtn = document.getElementById("doc-rx-next-btn");
+
+    if (pageInfo) {
+      const start = this.total === 0 ? 0 : (this.page - 1) * this.pageSize + 1;
+      const end = Math.min(this.page * this.pageSize, this.total);
+      pageInfo.textContent = `Showing ${start}-${end} of ${this.total} prescriptions`;
+    }
+    if (pageNum) {
+      pageNum.textContent = `Page ${this.page} of ${this.totalPages}`;
+    }
+    if (prevBtn) {
+      prevBtn.disabled = this.page <= 1;
+    }
+    if (nextBtn) {
+      nextBtn.disabled = this.page >= this.totalPages;
     }
   },
 

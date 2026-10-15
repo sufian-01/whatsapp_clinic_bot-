@@ -70,11 +70,20 @@ export const PatientsView = {
             </tbody>
           </table>
         </div>
-        <div class="pagination-container">
-          <div id="patients-page-info">Showing 0 of 0 patients</div>
-          <div class="pagination-controls">
-            <button id="patients-prev-btn" class="btn btn-secondary btn-sm" disabled>Previous</button>
-            <button id="patients-next-btn" class="btn btn-secondary btn-sm" disabled>Next</button>
+        <div class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border-light); background: var(--bg-surface);">
+          <div id="patients-page-info" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Showing 0 of 0 patients</div>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <label for="patients-page-size" style="font-size: 12px; color: var(--text-secondary);">Per page:</label>
+              <select id="patients-page-size" class="form-select" style="font-size: 12px; padding: 4px 8px; width: auto; height: 32px;">
+                <option value="10" selected>10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+              </select>
+            </div>
+            <button id="patients-prev-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">&larr; Previous</button>
+            <span id="patients-page-num" style="font-size: 13px; font-weight: 600; padding: 0 4px; color: var(--text-main);">Page 1 of 1</span>
+            <button id="patients-next-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">Next &rarr;</button>
           </div>
         </div>
       </div>
@@ -91,6 +100,12 @@ export const PatientsView = {
     );
 
     document.getElementById("add-patient-btn")?.addEventListener("click", () => this.openAddPatientModal());
+
+    document.getElementById("patients-page-size")?.addEventListener("change", (e) => {
+      this.pageSize = parseInt(e.target.value, 10) || 10;
+      this.currentPage = 1;
+      this.loadPatients();
+    });
 
     document.getElementById("patients-prev-btn")?.addEventListener("click", () => {
       if (this.currentPage > 1) {
@@ -132,8 +147,18 @@ export const PatientsView = {
       this.currentPage = res.page || 1;
 
       const pageInfo = document.getElementById("patients-page-info");
+      const pageNum = document.getElementById("patients-page-num");
       if (pageInfo) {
-        pageInfo.textContent = `Showing ${res.patients.length} of ${res.total} patients (Page ${this.currentPage} of ${this.totalPages})`;
+        if (!res.total) {
+          pageInfo.textContent = "Showing 0 patients";
+        } else {
+          const start = (this.currentPage - 1) * this.pageSize + 1;
+          const end = Math.min(this.currentPage * this.pageSize, res.total);
+          pageInfo.textContent = `Showing ${start} – ${end} of ${res.total} patients`;
+        }
+      }
+      if (pageNum) {
+        pageNum.textContent = `Page ${this.currentPage} of ${this.totalPages}`;
       }
 
       const prevBtn = document.getElementById("patients-prev-btn");
@@ -198,6 +223,68 @@ export const PatientsView = {
       const prescriptions = Array.isArray(rxsRes) ? rxsRes : (rxsRes.prescriptions || []);
       const isInactive = (patient.status || "Active").toLowerCase() === "inactive";
 
+      const SUB_PAGE_SIZE = 5;
+      let apptPage = 1;
+      const totalApptPages = Math.ceil(appts.length / SUB_PAGE_SIZE) || 1;
+
+      let rxPage = 1;
+      const totalRxPages = Math.ceil(prescriptions.length / SUB_PAGE_SIZE) || 1;
+
+      let payPage = 1;
+      const totalPayPages = Math.ceil(payments.length / SUB_PAGE_SIZE) || 1;
+
+      const renderApptRows = (page) => {
+        const start = (page - 1) * SUB_PAGE_SIZE;
+        const slice = appts.slice(start, start + SUB_PAGE_SIZE);
+        if (slice.length === 0) return `<tr><td colspan="5" class="empty-state-cell">No appointments found</td></tr>`;
+        return slice.map((a) => `
+          <tr>
+            <td style="font-family:monospace;">${escapeHtml(a["Token No"] || a.token_no || "-")}</td>
+            <td>${formatDate(a["Appointment Date"] || a.date)}</td>
+            <td>${escapeHtml(a.Doctor || a.doctor || "-")}</td>
+            <td>${renderBadge(a["Booking Status"] || a.status || "Confirmed")}</td>
+            <td>${renderBadge(a["Payment Status"] || a.payment_status || "Pending")}</td>
+          </tr>
+        `).join("");
+      };
+
+      const renderRxRows = (page) => {
+        const start = (page - 1) * SUB_PAGE_SIZE;
+        const slice = prescriptions.slice(start, start + SUB_PAGE_SIZE);
+        if (slice.length === 0) return `<tr><td colspan="6" class="empty-state-cell">No prescriptions recorded for this patient</td></tr>`;
+        return slice.map((rx) => `
+          <tr>
+            <td style="font-family:monospace; font-weight:600;">${escapeHtml(rx.prescription_id || rx.id)}</td>
+            <td>${formatDate(rx.date || rx.created_at)}</td>
+            <td>${escapeHtml(rx.doctor_name || rx.doctor_id || "Doctor")}</td>
+            <td>${escapeHtml(rx.diagnosis || "—")}</td>
+            <td>${renderBadge(rx.status || "draft")}</td>
+            <td style="text-align:right; white-space:nowrap;">
+              ${(rx.status === "finalized" || rx.status === "amended") ? `
+                <a href="${API.getAdminPrescriptionPdfUrl(rx.prescription_id || rx.id)}" target="_blank" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;">
+                  📄 PDF
+                </a>
+              ` : `<span style="color:var(--text-muted); font-size:11px;">Draft</span>`}
+            </td>
+          </tr>
+        `).join("");
+      };
+
+      const renderPayRows = (page) => {
+        const start = (page - 1) * SUB_PAGE_SIZE;
+        const slice = payments.slice(start, start + SUB_PAGE_SIZE);
+        if (slice.length === 0) return `<tr><td colspan="5" class="empty-state-cell">No payments recorded</td></tr>`;
+        return slice.map((p) => `
+          <tr>
+            <td style="font-family:monospace;">${escapeHtml(p.token_no || "-")}</td>
+            <td>${formatDate(p.appointment_date)}</td>
+            <td style="font-weight:600;">${formatCurrency(p.amount)}</td>
+            <td>${escapeHtml(p.payment_method || "Offline")}</td>
+            <td>${renderBadge(p.payment_status || "Pending")}</td>
+          </tr>
+        `).join("");
+      };
+
       const bodyHtml = `
         <div style="display:flex; flex-direction:column; gap:20px;">
           <!-- Patient Summary Card -->
@@ -251,9 +338,16 @@ export const PatientsView = {
 
           <!-- Appointment History -->
           <div>
-            <h4 style="font-size:14px; font-weight:700; margin-bottom:10px; color:var(--text-main);">Appointment History (${appts.length})</h4>
-            <div style="max-height: 160px; overflow-y:auto; border:1px solid var(--border-light); border-radius:var(--radius-md);">
-              <table class="data-table" style="font-size:12.5px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <h4 style="font-size:14px; font-weight:700; margin:0; color:var(--text-main);">Appointment History (${appts.length})</h4>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <button id="modal-appt-prev" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;" ${apptPage <= 1 ? 'disabled' : ''}>&larr; Prev</button>
+                <span id="modal-appt-info" style="font-size:11.5px; font-weight:600; color:var(--text-secondary);">Page 1 of ${totalApptPages}</span>
+                <button id="modal-appt-next" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;" ${totalApptPages <= 1 ? 'disabled' : ''}>Next &rarr;</button>
+              </div>
+            </div>
+            <div style="border:1px solid var(--border-light); border-radius:var(--radius-md); overflow:hidden;">
+              <table class="data-table" style="font-size:12.5px; margin:0;">
                 <thead>
                   <tr>
                     <th>Token</th>
@@ -263,17 +357,8 @@ export const PatientsView = {
                     <th>Payment</th>
                   </tr>
                 </thead>
-                <tbody>
-                  ${appts.length === 0 ? `<tr><td colspan="5" class="empty-state-cell">No appointments found</td></tr>` : 
-                    appts.map((a) => `
-                      <tr>
-                        <td style="font-family:monospace;">${escapeHtml(a["Token No"] || a.token_no || "-")}</td>
-                        <td>${formatDate(a["Appointment Date"] || a.date)}</td>
-                        <td>${escapeHtml(a.Doctor || a.doctor || "-")}</td>
-                        <td>${renderBadge(a["Booking Status"] || a.status || "Confirmed")}</td>
-                        <td>${renderBadge(a["Payment Status"] || a.payment_status || "Pending")}</td>
-                      </tr>
-                    `).join("")}
+                <tbody id="modal-appt-tbody">
+                  ${renderApptRows(1)}
                 </tbody>
               </table>
             </div>
@@ -281,9 +366,16 @@ export const PatientsView = {
 
           <!-- Prescription History -->
           <div>
-            <h4 style="font-size:14px; font-weight:700; margin-bottom:10px; color:var(--text-main);">Prescription History (${prescriptions.length})</h4>
-            <div style="max-height: 160px; overflow-y:auto; border:1px solid var(--border-light); border-radius:var(--radius-md);">
-              <table class="data-table" style="font-size:12.5px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <h4 style="font-size:14px; font-weight:700; margin:0; color:var(--text-main);">Prescription History (${prescriptions.length})</h4>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <button id="modal-rx-prev" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;" ${rxPage <= 1 ? 'disabled' : ''}>&larr; Prev</button>
+                <span id="modal-rx-info" style="font-size:11.5px; font-weight:600; color:var(--text-secondary);">Page 1 of ${totalRxPages}</span>
+                <button id="modal-rx-next" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;" ${totalRxPages <= 1 ? 'disabled' : ''}>Next &rarr;</button>
+              </div>
+            </div>
+            <div style="border:1px solid var(--border-light); border-radius:var(--radius-md); overflow:hidden;">
+              <table class="data-table" style="font-size:12.5px; margin:0;">
                 <thead>
                   <tr>
                     <th>Rx ID</th>
@@ -294,24 +386,8 @@ export const PatientsView = {
                     <th style="text-align:right;">Action</th>
                   </tr>
                 </thead>
-                <tbody>
-                  ${prescriptions.length === 0 ? `<tr><td colspan="6" class="empty-state-cell">No prescriptions recorded for this patient</td></tr>` : 
-                    prescriptions.map((rx) => `
-                      <tr>
-                        <td style="font-family:monospace; font-weight:600;">${escapeHtml(rx.prescription_id || rx.id)}</td>
-                        <td>${formatDate(rx.date || rx.created_at)}</td>
-                        <td>${escapeHtml(rx.doctor_name || rx.doctor_id || "Doctor")}</td>
-                        <td>${escapeHtml(rx.diagnosis || "—")}</td>
-                        <td>${renderBadge(rx.status || "draft")}</td>
-                        <td style="text-align:right; white-space:nowrap;">
-                          ${(rx.status === "finalized" || rx.status === "amended") ? `
-                            <a href="${API.getAdminPrescriptionPdfUrl(rx.prescription_id || rx.id)}" target="_blank" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;">
-                              📄 PDF
-                            </a>
-                          ` : `<span style="color:var(--text-muted); font-size:11px;">Draft</span>`}
-                        </td>
-                      </tr>
-                    `).join("")}
+                <tbody id="modal-rx-tbody">
+                  ${renderRxRows(1)}
                 </tbody>
               </table>
             </div>
@@ -319,9 +395,16 @@ export const PatientsView = {
 
           <!-- Payment History -->
           <div>
-            <h4 style="font-size:14px; font-weight:700; margin-bottom:10px; color:var(--text-main);">Payment Records</h4>
-            <div style="max-height: 150px; overflow-y:auto; border:1px solid var(--border-light); border-radius:var(--radius-md);">
-              <table class="data-table" style="font-size:12.5px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <h4 style="font-size:14px; font-weight:700; margin:0; color:var(--text-main);">Payment Records (${payments.length})</h4>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <button id="modal-pay-prev" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;" ${payPage <= 1 ? 'disabled' : ''}>&larr; Prev</button>
+                <span id="modal-pay-info" style="font-size:11.5px; font-weight:600; color:var(--text-secondary);">Page 1 of ${totalPayPages}</span>
+                <button id="modal-pay-next" class="btn btn-secondary btn-sm" style="padding:2px 8px; font-size:11px;" ${totalPayPages <= 1 ? 'disabled' : ''}>Next &rarr;</button>
+              </div>
+            </div>
+            <div style="border:1px solid var(--border-light); border-radius:var(--radius-md); overflow:hidden;">
+              <table class="data-table" style="font-size:12.5px; margin:0;">
                 <thead>
                   <tr>
                     <th>Token</th>
@@ -331,17 +414,8 @@ export const PatientsView = {
                     <th>Status</th>
                   </tr>
                 </thead>
-                <tbody>
-                  ${payments.length === 0 ? `<tr><td colspan="5" class="empty-state-cell">No payments recorded</td></tr>` : 
-                    payments.map((p) => `
-                      <tr>
-                        <td style="font-family:monospace;">${escapeHtml(p.token_no || "-")}</td>
-                        <td>${formatDate(p.appointment_date)}</td>
-                        <td style="font-weight:600;">${formatCurrency(p.amount)}</td>
-                        <td>${escapeHtml(p.payment_method || "Offline")}</td>
-                        <td>${renderBadge(p.payment_status || "Pending")}</td>
-                      </tr>
-                    `).join("")}
+                <tbody id="modal-pay-tbody">
+                  ${renderPayRows(1)}
                 </tbody>
               </table>
             </div>
@@ -354,6 +428,90 @@ export const PatientsView = {
       `;
 
       Modal.open(`Patient Profile`, bodyHtml, footerHtml);
+
+      // Bind Appointment sub-table pagination
+      document.getElementById("modal-appt-prev")?.addEventListener("click", () => {
+        if (apptPage > 1) {
+          apptPage--;
+          const tb = document.getElementById("modal-appt-tbody");
+          if (tb) tb.innerHTML = renderApptRows(apptPage);
+          const info = document.getElementById("modal-appt-info");
+          if (info) info.textContent = `Page ${apptPage} of ${totalApptPages}`;
+          const p = document.getElementById("modal-appt-prev");
+          const n = document.getElementById("modal-appt-next");
+          if (p) p.disabled = apptPage <= 1;
+          if (n) n.disabled = apptPage >= totalApptPages;
+        }
+      });
+      document.getElementById("modal-appt-next")?.addEventListener("click", () => {
+        if (apptPage < totalApptPages) {
+          apptPage++;
+          const tb = document.getElementById("modal-appt-tbody");
+          if (tb) tb.innerHTML = renderApptRows(apptPage);
+          const info = document.getElementById("modal-appt-info");
+          if (info) info.textContent = `Page ${apptPage} of ${totalApptPages}`;
+          const p = document.getElementById("modal-appt-prev");
+          const n = document.getElementById("modal-appt-next");
+          if (p) p.disabled = apptPage <= 1;
+          if (n) n.disabled = apptPage >= totalApptPages;
+        }
+      });
+
+      // Bind Prescription sub-table pagination
+      document.getElementById("modal-rx-prev")?.addEventListener("click", () => {
+        if (rxPage > 1) {
+          rxPage--;
+          const tb = document.getElementById("modal-rx-tbody");
+          if (tb) tb.innerHTML = renderRxRows(rxPage);
+          const info = document.getElementById("modal-rx-info");
+          if (info) info.textContent = `Page ${rxPage} of ${totalRxPages}`;
+          const p = document.getElementById("modal-rx-prev");
+          const n = document.getElementById("modal-rx-next");
+          if (p) p.disabled = rxPage <= 1;
+          if (n) n.disabled = rxPage >= totalRxPages;
+        }
+      });
+      document.getElementById("modal-rx-next")?.addEventListener("click", () => {
+        if (rxPage < totalRxPages) {
+          rxPage++;
+          const tb = document.getElementById("modal-rx-tbody");
+          if (tb) tb.innerHTML = renderRxRows(rxPage);
+          const info = document.getElementById("modal-rx-info");
+          if (info) info.textContent = `Page ${rxPage} of ${totalRxPages}`;
+          const p = document.getElementById("modal-rx-prev");
+          const n = document.getElementById("modal-rx-next");
+          if (p) p.disabled = rxPage <= 1;
+          if (n) n.disabled = rxPage >= totalRxPages;
+        }
+      });
+
+      // Bind Payment sub-table pagination
+      document.getElementById("modal-pay-prev")?.addEventListener("click", () => {
+        if (payPage > 1) {
+          payPage--;
+          const tb = document.getElementById("modal-pay-tbody");
+          if (tb) tb.innerHTML = renderPayRows(payPage);
+          const info = document.getElementById("modal-pay-info");
+          if (info) info.textContent = `Page ${payPage} of ${totalPayPages}`;
+          const p = document.getElementById("modal-pay-prev");
+          const n = document.getElementById("modal-pay-next");
+          if (p) p.disabled = payPage <= 1;
+          if (n) n.disabled = payPage >= totalPayPages;
+        }
+      });
+      document.getElementById("modal-pay-next")?.addEventListener("click", () => {
+        if (payPage < totalPayPages) {
+          payPage++;
+          const tb = document.getElementById("modal-pay-tbody");
+          if (tb) tb.innerHTML = renderPayRows(payPage);
+          const info = document.getElementById("modal-pay-info");
+          if (info) info.textContent = `Page ${payPage} of ${totalPayPages}`;
+          const p = document.getElementById("modal-pay-prev");
+          const n = document.getElementById("modal-pay-next");
+          if (p) p.disabled = payPage <= 1;
+          if (n) n.disabled = payPage >= totalPayPages;
+        }
+      });
 
       document.getElementById("modal-close-action-btn")?.addEventListener("click", () => Modal.close());
       document.getElementById("edit-patient-btn")?.addEventListener("click", () => {

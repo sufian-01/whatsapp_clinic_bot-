@@ -11,6 +11,10 @@ export const SlotsView = {
   doctorFilter: "",
   statusFilter: "",
   doctorsList: [],
+  page: 1,
+  pageSize: 25,
+  total: 0,
+  totalPages: 1,
   _abortController: null,
 
   async init() {
@@ -48,8 +52,8 @@ export const SlotsView = {
         </div>
       </div>
 
-      <div class="card">
-        <div class="table-container">
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="table-container" style="max-height: 600px; overflow-y: auto;">
           <table class="data-table">
             <thead>
               <tr>
@@ -67,28 +71,73 @@ export const SlotsView = {
             </tbody>
           </table>
         </div>
+
+        <!-- Slots Pagination Bar -->
+        <div id="slots-pagination-bar" class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border-light); background: var(--bg-surface);">
+          <div id="slots-page-info" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">
+            Showing 0 slots
+          </div>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <label for="slots-page-size" style="font-size: 12px; color: var(--text-secondary);">Per page:</label>
+              <select id="slots-page-size" class="form-select" style="font-size: 12px; padding: 4px 8px; width: auto; height: 32px;">
+                <option value="15">15</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+            <button id="slots-prev-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">&larr; Previous</button>
+            <span id="slots-page-num" style="font-size: 13px; font-weight: 600; padding: 0 4px; color: var(--text-main);">Page 1 of 1</span>
+            <button id="slots-next-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">Next &rarr;</button>
+          </div>
+        </div>
       </div>
     `;
 
     document.getElementById("slots-date-filter")?.addEventListener("change", (e) => {
       this.dateFilter = e.target.value;
+      this.page = 1;
       this.loadSlots();
     });
 
     document.getElementById("slots-doctor-filter")?.addEventListener("change", (e) => {
       this.doctorFilter = e.target.value;
+      this.page = 1;
       this.loadSlots();
     });
 
     document.getElementById("slots-status-filter")?.addEventListener("change", (e) => {
       this.statusFilter = e.target.value;
+      this.page = 1;
       this.loadSlots();
+    });
+
+    document.getElementById("slots-page-size")?.addEventListener("change", (e) => {
+      this.pageSize = parseInt(e.target.value, 10) || 25;
+      this.page = 1;
+      this.loadSlots();
+    });
+
+    document.getElementById("slots-prev-btn")?.addEventListener("click", () => {
+      if (this.page > 1) {
+        this.page--;
+        this.loadSlots();
+      }
+    });
+
+    document.getElementById("slots-next-btn")?.addEventListener("click", () => {
+      if (this.page < this.totalPages) {
+        this.page++;
+        this.loadSlots();
+      }
     });
 
     document.getElementById("slots-reset-btn")?.addEventListener("click", () => {
       this.dateFilter = "";
       this.doctorFilter = "";
       this.statusFilter = "";
+      this.page = 1;
       const d = document.getElementById("slots-date-filter");
       const doc = document.getElementById("slots-doctor-filter");
       const st = document.getElementById("slots-status-filter");
@@ -132,11 +181,28 @@ export const SlotsView = {
     tbody.innerHTML = renderTableSkeletons(7, 5);
 
     try {
-      const slots = await API.listSlots({
+      const res = await API.listSlots({
         date: this.dateFilter,
         doctor: this.doctorFilter,
         status: this.statusFilter,
+        page: this.page,
+        page_size: this.pageSize,
       }, { signal: this._abortController.signal });
+
+      let slots = [];
+      if (res && res.slots) {
+        slots = res.slots;
+        this.total = res.total || 0;
+        this.page = res.page || this.page;
+        this.totalPages = res.total_pages || Math.ceil(this.total / this.pageSize) || 1;
+      } else if (Array.isArray(res)) {
+        this.total = res.length;
+        this.totalPages = Math.ceil(this.total / this.pageSize) || 1;
+        const start = (this.page - 1) * this.pageSize;
+        slots = res.slice(start, start + this.pageSize);
+      }
+
+      this.updatePaginationUI();
 
       if (!slots || slots.length === 0) {
         tbody.innerHTML = `<tr><td colspan="7" class="empty-state-cell">No slots found matching criteria.</td></tr>`;
@@ -196,6 +262,35 @@ export const SlotsView = {
       </td></tr>`;
       document.getElementById("slots-retry-btn")?.addEventListener("click", () => this.loadSlots());
       showToast(err.message || "Failed to load slots", "error");
+    }
+  },
+
+  updatePaginationUI() {
+    const pageInfo = document.getElementById("slots-page-info");
+    const pageNum = document.getElementById("slots-page-num");
+    const prevBtn = document.getElementById("slots-prev-btn");
+    const nextBtn = document.getElementById("slots-next-btn");
+
+    if (pageInfo) {
+      if (this.total === 0) {
+        pageInfo.textContent = "Showing 0 slots";
+      } else {
+        const start = (this.page - 1) * this.pageSize + 1;
+        const end = Math.min(this.page * this.pageSize, this.total);
+        pageInfo.textContent = `Showing ${start} – ${end} of ${this.total} slots`;
+      }
+    }
+
+    if (pageNum) {
+      pageNum.textContent = `Page ${this.page} of ${this.totalPages}`;
+    }
+
+    if (prevBtn) {
+      prevBtn.disabled = this.page <= 1;
+    }
+
+    if (nextBtn) {
+      nextBtn.disabled = this.page >= this.totalPages;
     }
   },
 

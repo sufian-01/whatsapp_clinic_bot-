@@ -7,6 +7,10 @@ import { escapeHtml, formatDate, formatTime, renderBadge, showToast, Modal } fro
 
 export const DoctorSlotsView = {
   container: null,
+  page: 1,
+  pageSize: 15,
+  total: 0,
+  totalPages: 1,
   _abortController: null,
 
   async init() {
@@ -57,9 +61,9 @@ export const DoctorSlotsView = {
         <button id="doc-slot-reset-filter" class="btn btn-secondary btn-sm">Reset</button>
       </div>
 
-      <!-- Slots Table -->
-      <div class="card">
-        <div class="table-container">
+      <!-- Slots Table Card -->
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="table-container" style="max-height: 560px; overflow-y: auto;">
           <table class="data-table">
             <thead>
               <tr>
@@ -77,17 +81,68 @@ export const DoctorSlotsView = {
             </tbody>
           </table>
         </div>
+
+        <!-- Doctor Slots Pagination Bar -->
+        <div id="doc-slots-pagination-bar" class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border-light); background: var(--bg-surface);">
+          <div id="doc-slots-page-info" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">
+            Showing 0 slots
+          </div>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <label for="doc-slots-page-size" style="font-size: 12px; color: var(--text-secondary);">Per page:</label>
+              <select id="doc-slots-page-size" class="form-select" style="font-size: 12px; padding: 4px 8px; width: auto; height: 32px;">
+                <option value="10">10</option>
+                <option value="15" selected>15</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+              </select>
+            </div>
+            <button id="doc-slots-prev-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">&larr; Previous</button>
+            <span id="doc-slots-page-num" style="font-size: 13px; font-weight: 600; padding: 0 4px; color: var(--text-main);">Page 1 of 1</span>
+            <button id="doc-slots-next-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">Next &rarr;</button>
+          </div>
+        </div>
       </div>
     `;
 
     document.getElementById("doc-slot-refresh-btn")?.addEventListener("click", () => this.loadData());
-    document.getElementById("doc-slot-date-filter")?.addEventListener("change", () => this.loadData());
-    document.getElementById("doc-slot-status-filter")?.addEventListener("change", () => this.loadData());
+
+    document.getElementById("doc-slot-date-filter")?.addEventListener("change", () => {
+      this.page = 1;
+      this.loadData();
+    });
+
+    document.getElementById("doc-slot-status-filter")?.addEventListener("change", () => {
+      this.page = 1;
+      this.loadData();
+    });
+
+    document.getElementById("doc-slots-page-size")?.addEventListener("change", (e) => {
+      this.pageSize = parseInt(e.target.value, 10) || 15;
+      this.page = 1;
+      this.loadData();
+    });
+
+    document.getElementById("doc-slots-prev-btn")?.addEventListener("click", () => {
+      if (this.page > 1) {
+        this.page--;
+        this.loadData();
+      }
+    });
+
+    document.getElementById("doc-slots-next-btn")?.addEventListener("click", () => {
+      if (this.page < this.totalPages) {
+        this.page++;
+        this.loadData();
+      }
+    });
+
     document.getElementById("doc-slot-reset-filter")?.addEventListener("click", () => {
       const dt = document.getElementById("doc-slot-date-filter");
       const st = document.getElementById("doc-slot-status-filter");
       if (dt) dt.value = "";
       if (st) st.value = "";
+      this.page = 1;
       this.loadData();
     });
 
@@ -111,10 +166,27 @@ export const DoctorSlotsView = {
     }
 
     try {
-      const slots = await API.getDoctorSlots({
+      const res = await API.getDoctorSlots({
         date: dateVal,
         status: statusVal,
+        page: this.page,
+        page_size: this.pageSize,
       }, { signal: this._abortController.signal });
+
+      let slots = [];
+      if (res && res.slots) {
+        slots = res.slots;
+        this.total = res.total || 0;
+        this.page = res.page || this.page;
+        this.totalPages = res.total_pages || Math.ceil(this.total / this.pageSize) || 1;
+      } else if (Array.isArray(res)) {
+        this.total = res.length;
+        this.totalPages = Math.ceil(this.total / this.pageSize) || 1;
+        const start = (this.page - 1) * this.pageSize;
+        slots = res.slice(start, start + this.pageSize);
+      }
+
+      this.updatePaginationUI();
       this.renderTable(slots || []);
     } catch (err) {
       if (err.name === "AbortError") return;
@@ -131,6 +203,35 @@ export const DoctorSlotsView = {
         `;
         document.getElementById("doc-slot-retry-btn")?.addEventListener("click", () => this.loadData());
       }
+    }
+  },
+
+  updatePaginationUI() {
+    const pageInfo = document.getElementById("doc-slots-page-info");
+    const pageNum = document.getElementById("doc-slots-page-num");
+    const prevBtn = document.getElementById("doc-slots-prev-btn");
+    const nextBtn = document.getElementById("doc-slots-next-btn");
+
+    if (pageInfo) {
+      if (this.total === 0) {
+        pageInfo.textContent = "Showing 0 slots";
+      } else {
+        const start = (this.page - 1) * this.pageSize + 1;
+        const end = Math.min(this.page * this.pageSize, this.total);
+        pageInfo.textContent = `Showing ${start} – ${end} of ${this.total} slots`;
+      }
+    }
+
+    if (pageNum) {
+      pageNum.textContent = `Page ${this.page} of ${this.totalPages}`;
+    }
+
+    if (prevBtn) {
+      prevBtn.disabled = this.page <= 1;
+    }
+
+    if (nextBtn) {
+      nextBtn.disabled = this.page >= this.totalPages;
     }
   },
 

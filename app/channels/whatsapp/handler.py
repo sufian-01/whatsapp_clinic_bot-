@@ -36,7 +36,7 @@ from ...core.feature_flags import (
     resolve_effective_feature_flags,
 )
 from ...core.tenant import tenant_scope
-from ...telegram.sessions import SessionStore
+from ...core.sessions import SessionStore
 from .client import MetaWhatsAppClient, normalize_phone_number
 from .models import WhatsAppMessage, WhatsAppValue
 

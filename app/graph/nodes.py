@@ -26,7 +26,7 @@ from .state import GraphState
 
 logger = logging.getLogger(__name__)
 
-# Maximum doctors to show as Telegram inline buttons (beyond this limit we use text)
+# Maximum doctors to show as interactive buttons (beyond this limit we use text)
 _MAX_BUTTON_DOCTORS = 8
 
 
@@ -1304,9 +1304,10 @@ class GraphNodes:
             t = state.get("appointment_time", "")
 
             try:
+                channel_name = str(state.get("channel", "WhatsApp")).title()
                 res = self._crm.cancel_appointment(
                     identifier=curr_appt_id,
-                    reason="Patient requested cancellation via Telegram",
+                    reason=f"Patient requested cancellation via {channel_name}",
                 )
                 return {
                     **state,

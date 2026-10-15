@@ -6,7 +6,7 @@ import io
 import math
 from pathlib import Path
 import re
-from typing import Optional
+from typing import Optional, Union
 from zoneinfo import ZoneInfo
 
 from ..tools.invoice import InvoiceData, generate_invoice
@@ -1866,8 +1866,11 @@ class CrmService:
         date_filter: str = "",
         status_filter: str = "",
         search: str = "",
-    ) -> list[dict]:
-        """List appointments assigned strictly to the specified doctor."""
+        require_payment_confirmed: bool = False,
+        page: Optional[int] = None,
+        page_size: Optional[int] = None,
+    ) -> Union[list[dict], dict]:
+        """List appointments assigned strictly to the specified doctor with priority queue sequencing."""
         doc_name = self._get_doctor_name_by_id(doctor_id)
         res = self.list_appointments(page_size=10000)
         all_appts = res.get("appointments", [])
@@ -1875,12 +1878,24 @@ class CrmService:
         norm_name = doc_name.strip().casefold()
         norm_id = doctor_id.strip().casefold()
 
-        # Strict isolation filter
+        # Strict doctor isolation filter
         doc_appts = [
             a for a in all_appts
             if (norm_name and norm_name in a.get("doctor", "").casefold())
             or (norm_id and norm_id == a.get("doctor_id", "").casefold())
         ]
+
+        # Payment confirmation gate (when enabled, only show verified/paid appointments in active queue)
+        if require_payment_confirmed:
+            doc_appts = [
+                a for a in doc_appts
+                if a.get("payment_status", "").strip().casefold() in ("paid", "confirmed", "verified", "settled")
+                or (
+                    a.get("payment_method", "").strip().casefold() == "offline"
+                    and a.get("status", "").strip().casefold() in ("completed", "confirmed")
+                    and a.get("payment_status", "").strip().casefold() == "paid"
+                )
+            ]
 
         if date_filter:
             doc_appts = [a for a in doc_appts if a.get("date") == date_filter]
@@ -1907,7 +1922,46 @@ class CrmService:
                 a["prescription_id"] = rx.get("prescription_id") if rx else None
                 a["prescription_status"] = rx.get("status") if rx else None
 
-        doc_appts.sort(key=lambda a: (a.get("date", ""), a.get("time", "")), reverse=True)
+        # Priority Queue Ordering:
+        # 1. Appointment Date ASC
+        # 2. Appointment Time ASC
+        # 3. Queue Sequence / Numeric Token ASC (who booked/paid first)
+        def _queue_sort_key(item):
+            d = item.get("date", "")
+            t = item.get("time", "")
+            tok = item.get("token_no", "")
+            digits = "".join(filter(str.isdigit, str(tok)))
+            tok_num = 999999
+            if digits:
+                try:
+                    tok_num = int(digits)
+                except ValueError:
+                    pass
+            return (d, t, tok_num, str(tok))
+
+        doc_appts.sort(key=_queue_sort_key)
+
+        # Assign chronological queue position and payment confirmation flag
+        for idx, appt in enumerate(doc_appts, start=1):
+            appt["queue_position"] = idx
+            appt["is_payment_confirmed"] = appt.get("payment_status", "").strip().casefold() in (
+                "paid", "confirmed", "verified", "settled"
+            )
+
+        total_items = len(doc_appts)
+        if page is not None and page_size is not None and page_size > 0:
+            total_pages = max(1, (total_items + page_size - 1) // page_size)
+            start_idx = max(0, (page - 1) * page_size)
+            end_idx = start_idx + page_size
+            paginated = doc_appts[start_idx:end_idx]
+            return {
+                "appointments": paginated,
+                "total": total_items,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+            }
+
         return doc_appts
 
     def get_doctor_appointment(self, appointment_id: str, doctor_id: str) -> dict:

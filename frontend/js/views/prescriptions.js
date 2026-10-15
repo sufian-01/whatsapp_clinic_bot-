@@ -11,6 +11,10 @@ export const PrescriptionsView = {
   container: null,
   prescriptions: [],
   doctors: [],
+  page: 1,
+  pageSize: 15,
+  total: 0,
+  totalPages: 1,
   filters: {
     search: "",
     status: "",
@@ -102,6 +106,16 @@ export const PrescriptionsView = {
             </tbody>
           </table>
         </div>
+        <div id="admin-rx-pagination-bar" class="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border-light); background: var(--bg-surface);">
+          <div id="admin-rx-page-info" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">
+            Showing 0 prescriptions
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button id="admin-rx-prev-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">&larr; Previous</button>
+            <span id="admin-rx-page-num" style="font-size: 13px; font-weight: 600; padding: 0 6px;">Page 1 of 1</span>
+            <button id="admin-rx-next-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">Next &rarr;</button>
+          </div>
+        </div>
       </div>
     `;
 
@@ -127,27 +141,47 @@ export const PrescriptionsView = {
     const statusSelect = document.getElementById("admin-rx-status-filter");
     const dateInput = document.getElementById("admin-rx-date-filter");
     const resetBtn = document.getElementById("admin-rx-reset-filter");
+    const prevBtn = document.getElementById("admin-rx-prev-btn");
+    const nextBtn = document.getElementById("admin-rx-next-btn");
 
     refreshBtn?.addEventListener("click", () => this.loadData());
 
     searchInput?.addEventListener("input", debounce((e) => {
       this.filters.search = e.target.value.toLowerCase().trim();
-      this.renderRows();
+      this.page = 1;
+      this.loadData();
     }, 250));
 
     doctorSelect?.addEventListener("change", (e) => {
       this.filters.doctor_id = e.target.value;
+      this.page = 1;
       this.loadData();
     });
 
     statusSelect?.addEventListener("change", (e) => {
       this.filters.status = e.target.value;
+      this.page = 1;
       this.loadData();
     });
 
     dateInput?.addEventListener("change", (e) => {
       this.filters.date = e.target.value;
+      this.page = 1;
       this.loadData();
+    });
+
+    prevBtn?.addEventListener("click", () => {
+      if (this.page > 1) {
+        this.page -= 1;
+        this.loadData();
+      }
+    });
+
+    nextBtn?.addEventListener("click", () => {
+      if (this.page < this.totalPages) {
+        this.page += 1;
+        this.loadData();
+      }
     });
 
     resetBtn?.addEventListener("click", () => {
@@ -155,6 +189,7 @@ export const PrescriptionsView = {
       this.filters.status = "";
       this.filters.doctor_id = "";
       this.filters.date = "";
+      this.page = 1;
       if (searchInput) searchInput.value = "";
       if (doctorSelect) doctorSelect.value = "";
       if (statusSelect) statusSelect.value = "";
@@ -175,14 +210,28 @@ export const PrescriptionsView = {
     }
 
     try {
-      const params = {};
+      const params = {
+        page: this.page,
+        page_size: this.pageSize,
+      };
+      if (this.filters.search) params.search = this.filters.search;
       if (this.filters.status) params.status = this.filters.status;
       if (this.filters.doctor_id) params.doctor_id = this.filters.doctor_id;
       if (this.filters.date) params.date = this.filters.date;
 
       const res = await API.getAdminPrescriptions(params, { signal: this._abortController.signal });
-      this.prescriptions = Array.isArray(res) ? res : (res.prescriptions || []);
+      if (res && res.prescriptions) {
+        this.prescriptions = res.prescriptions;
+        this.total = res.total || 0;
+        this.page = res.page || 1;
+        this.totalPages = res.total_pages || 1;
+      } else {
+        this.prescriptions = Array.isArray(res) ? res : [];
+        this.total = this.prescriptions.length;
+        this.totalPages = 1;
+      }
       this.renderRows();
+      this.updatePaginationUI();
     } catch (err) {
       if (err.name === "AbortError") return;
       console.error("Failed to load admin prescriptions:", err);
@@ -198,6 +247,28 @@ export const PrescriptionsView = {
         `;
         document.getElementById("admin-rx-retry-btn")?.addEventListener("click", () => this.loadData());
       }
+    }
+  },
+
+  updatePaginationUI() {
+    const pageInfo = document.getElementById("admin-rx-page-info");
+    const pageNum = document.getElementById("admin-rx-page-num");
+    const prevBtn = document.getElementById("admin-rx-prev-btn");
+    const nextBtn = document.getElementById("admin-rx-next-btn");
+
+    if (pageInfo) {
+      const start = this.total === 0 ? 0 : (this.page - 1) * this.pageSize + 1;
+      const end = Math.min(this.page * this.pageSize, this.total);
+      pageInfo.textContent = `Showing ${start}-${end} of ${this.total} prescriptions`;
+    }
+    if (pageNum) {
+      pageNum.textContent = `Page ${this.page} of ${this.totalPages}`;
+    }
+    if (prevBtn) {
+      prevBtn.disabled = this.page <= 1;
+    }
+    if (nextBtn) {
+      nextBtn.disabled = this.page >= this.totalPages;
     }
   },
 

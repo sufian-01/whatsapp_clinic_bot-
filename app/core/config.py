@@ -149,7 +149,6 @@ def get_settings() -> Settings:
 def validate_settings(settings: Settings) -> None:
     missing = []
     for name, value in (
-        ("TELEGRAM_BOT_TOKEN", settings.telegram_bot_token),
         ("GEMINI_API_KEY", settings.gemini_api_key),
     ):
         if not value:

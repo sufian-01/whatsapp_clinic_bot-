@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import re
 from threading import RLock
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -1567,8 +1567,10 @@ class PostgresPrescriptionService:
         status: Optional[str] = None,
         date_filter: Optional[str] = None,
         search: Optional[str] = None,
-    ) -> list[dict]:
-        """List prescriptions with filtering from PostgreSQL."""
+        page: Optional[int] = None,
+        page_size: Optional[int] = 20,
+    ) -> Union[list[dict], dict]:
+        """List prescriptions with filtering and optional pagination from PostgreSQL."""
         tenant_id = _resolve_tenant_id()
         with self.session_factory() as session:
             stmt = (
@@ -1588,25 +1590,46 @@ class PostgresPrescriptionService:
                 stmt = stmt.where(Prescription.status == status.strip().lower())
             if date_filter:
                 stmt = stmt.where(Prescription.date == date_filter.strip())
+            if search and search.strip():
+                q = f"%{search.strip()}%"
+                stmt = stmt.where(
+                    or_(
+                        Patient.name.ilike(q),
+                        Patient.patient_id.ilike(q),
+                        Doctor.name.ilike(q),
+                        Doctor.doctor_id.ilike(q),
+                        Prescription.prescription_id.ilike(q),
+                        Prescription.diagnosis.ilike(q),
+                    )
+                )
 
             stmt = stmt.order_by(Prescription.date.desc(), Prescription.created_at.desc())
-            rows = session.execute(stmt).all()
 
+            if page is not None and page >= 1:
+                p_size = max(1, min(page_size or 20, 100))
+                count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+                total = session.execute(count_stmt).scalar_one()
+
+                paged_stmt = stmt.offset((page - 1) * p_size).limit(p_size)
+                rows = session.execute(paged_stmt).all()
+                results = []
+                for rx, pat, doc, appt in rows:
+                    meds = [self._med_to_dict(it) for it in rx.items]
+                    results.append(self._to_dict(rx, pat, doc, appt, meds))
+
+                return {
+                    "prescriptions": results,
+                    "total": total,
+                    "page": page,
+                    "page_size": p_size,
+                    "total_pages": max(1, math.ceil(total / p_size)) if total > 0 else 1,
+                }
+
+            rows = session.execute(stmt).all()
             results = []
             for rx, pat, doc, appt in rows:
                 meds = [self._med_to_dict(it) for it in rx.items]
-                rec = self._to_dict(rx, pat, doc, appt, meds)
-                if search:
-                    q = search.strip().casefold()
-                    if not (
-                        q in rec.get("patient_name", "").casefold()
-                        or q in rec.get("patient_id", "").casefold()
-                        or q in rec.get("diagnosis", "").casefold()
-                        or q in rec.get("prescription_id", "").casefold()
-                        or q in rec.get("doctor_name", "").casefold()
-                    ):
-                        continue
-                results.append(rec)
+                results.append(self._to_dict(rx, pat, doc, appt, meds))
             return results
 
     def record_email_delivery(

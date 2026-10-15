@@ -8,6 +8,7 @@ Provides dedicated clinical workflow endpoints:
 - PDF download & email delivery to patients
 """
 
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -122,9 +123,12 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
         date: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        require_paid: bool = False,
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(None, ge=1, le=100),
         current_doctor: dict = Depends(get_current_doctor),
     ):
-        """List appointments assigned strictly to this doctor."""
+        """List appointments assigned strictly to this doctor, prioritized by payment and booking queue."""
         doc_id = current_doctor.get("doctor_id")
         try:
             return crm.get_doctor_appointments(
@@ -132,6 +136,9 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
                 date_filter=date or "",
                 status_filter=status or "",
                 search=search or "",
+                require_payment_confirmed=require_paid,
+                page=page,
+                page_size=page_size,
             )
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to fetch doctor appointments: {err}")
@@ -160,16 +167,32 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
     async def list_patients(
         search: Optional[str] = None,
         require_paid: bool = False,
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(None, ge=1, le=100),
         current_doctor: dict = Depends(get_current_doctor),
     ):
-        """List patients assigned to this doctor."""
+        """List patients assigned to this doctor with optional pagination."""
         doc_id = current_doctor.get("doctor_id")
         try:
-            return crm.get_doctor_patients(
+            patients = crm.get_doctor_patients(
                 doctor_id=doc_id,
                 search=search or "",
                 require_verified_payment=require_paid,
             )
+            if page is not None:
+                p_size = page_size or 10
+                total = len(patients)
+                total_pages = math.ceil(total / p_size) if p_size > 0 else 1
+                start = (page - 1) * p_size
+                end = start + p_size
+                return {
+                    "patients": patients[start:end],
+                    "total": total,
+                    "page": page,
+                    "page_size": p_size,
+                    "total_pages": total_pages,
+                }
+            return patients
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to list doctor patients: {err}")
 
@@ -197,12 +220,28 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
     async def list_slots(
         date: Optional[str] = None,
         status: Optional[str] = None,
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(None, ge=1, le=200),
         current_doctor: dict = Depends(get_current_doctor),
     ):
-        """List slots belonging strictly to this doctor."""
+        """List slots belonging strictly to this doctor with optional pagination."""
         doc_id = current_doctor.get("doctor_id")
         try:
-            return crm.get_doctor_slots(doc_id, date_filter=date or "", status_filter=status or "")
+            slots = crm.get_doctor_slots(doc_id, date_filter=date or "", status_filter=status or "")
+            if page is not None:
+                p_size = page_size or 15
+                total = len(slots)
+                total_pages = math.ceil(total / p_size) if p_size > 0 else 1
+                start = (page - 1) * p_size
+                end = start + p_size
+                return {
+                    "slots": slots[start:end],
+                    "total": total,
+                    "page": page,
+                    "page_size": p_size,
+                    "total_pages": total_pages,
+                }
+            return slots
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to fetch doctor slots: {err}")
 
@@ -281,6 +320,8 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
         status: Optional[str] = None,
         date: Optional[str] = None,
         search: Optional[str] = None,
+        page: Optional[int] = Query(None, ge=1),
+        page_size: Optional[int] = Query(None, ge=1, le=100),
         current_doctor: dict = Depends(get_current_doctor),
     ):
         """List prescriptions authored by this doctor."""
@@ -293,6 +334,8 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
                 status=status,
                 date_filter=date,
                 search=search,
+                page=page,
+                page_size=page_size or 20,
             )
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to list prescriptions: {err}")

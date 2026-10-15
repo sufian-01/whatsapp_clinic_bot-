@@ -371,6 +371,8 @@
     document.getElementById('m_phone').value = t.phone || '';
     document.getElementById('m_email').value = t.email || '';
     document.getElementById('m_address').value = t.address || '';
+    const waStatusBox = document.getElementById('waConnectionStatus');
+    if (waStatusBox) waStatusBox.style.display = 'none';
 
     // Switch to Tab 1 initially
     document.querySelectorAll('.drawer-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === 'tab-overview'));
@@ -489,6 +491,64 @@
     };
   }
 
+  const btnTestWhatsApp = document.getElementById('btnTestWhatsAppConnection');
+  if (btnTestWhatsApp) {
+    btnTestWhatsApp.onclick = async () => {
+      if (!activeManageTenantId) return;
+      const phoneId = document.getElementById('m_waPhoneId').value.trim();
+      const statusBox = document.getElementById('waConnectionStatus');
+      if (!statusBox) return;
+
+      btnTestWhatsApp.disabled = true;
+      btnTestWhatsApp.innerHTML = '<span>⏳</span> Testing Meta Connection...';
+      statusBox.style.display = 'block';
+      statusBox.style.background = 'var(--bg-surface)';
+      statusBox.style.borderColor = 'var(--border-light)';
+      statusBox.style.color = 'var(--text-secondary)';
+      statusBox.innerHTML = 'Pinging Meta Cloud Graph API...';
+
+      try {
+        const res = await api(`/api/super-admin/tenants/${activeManageTenantId}/whatsapp/verify`, {
+          method: 'POST',
+          body: JSON.stringify({ phone_number_id: phoneId }),
+        });
+
+        if (res.success && res.data) {
+          statusBox.style.background = 'rgba(16, 185, 129, 0.1)';
+          statusBox.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+          statusBox.style.color = 'var(--success-text)';
+          statusBox.innerHTML = `
+            <div style="font-weight: 600; margin-bottom: 3px;">✅ Meta WhatsApp Connection Verified</div>
+            <div style="font-size: 11.5px; opacity: 0.9;">
+              <strong>Name:</strong> ${res.data.verified_name || '-'} | 
+              <strong>Display Phone:</strong> ${res.data.display_phone_number || '-'} | 
+              <strong>Quality:</strong> <span class="badge badge-completed" style="font-size: 10.5px; padding: 2px 6px;">${res.data.quality_rating || 'GREEN'}</span>
+            </div>
+          `;
+        } else {
+          statusBox.style.background = 'rgba(239, 68, 68, 0.1)';
+          statusBox.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+          statusBox.style.color = 'var(--danger-text)';
+          statusBox.innerHTML = `
+            <div style="font-weight: 600; margin-bottom: 3px;">⚠️ Connection Test Failed</div>
+            <div style="font-size: 11.5px;">${res.error || 'Unable to communicate with Meta Cloud API.'}</div>
+          `;
+        }
+      } catch (err) {
+        statusBox.style.background = 'rgba(239, 68, 68, 0.1)';
+        statusBox.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+        statusBox.style.color = 'var(--danger-text)';
+        statusBox.innerHTML = `
+          <div style="font-weight: 600; margin-bottom: 3px;">⚠️ Request Error</div>
+          <div style="font-size: 11.5px;">${err.message}</div>
+        `;
+      } finally {
+        btnTestWhatsApp.disabled = false;
+        btnTestWhatsApp.innerHTML = '<span>⚡</span> Test Meta Connection';
+      }
+    };
+  }
+
   // RAG Document Management
   async function loadTenantDocuments(tenantId) {
     const tableBody = document.getElementById('m_documentsTableBody');
@@ -576,28 +636,86 @@
 
 
   // -------------------------------------------------------------------------
-  // Platform Audit Logs
+  // Platform Audit Logs (Paginated)
   // -------------------------------------------------------------------------
+  let auditLogsData = [];
+  let auditLogsPage = 1;
+  const auditLogsPageSize = 15;
+
   async function loadAuditLogs() {
     const tableBody = document.getElementById('auditTableBody');
     tableBody.innerHTML = '<tr><td colspan="5" style="padding: 2rem; text-align:center;">Loading platform audit logs...</td></tr>';
     try {
       const logs = await api('/api/super-admin/audit-logs');
-      if (!logs || logs.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="5" style="padding: 2rem; text-align:center;">No platform audit entries recorded yet.</td></tr>';
-        return;
-      }
-      tableBody.innerHTML = logs.map(l => `
-        <tr style="border-bottom: 1px solid var(--border-color);">
-          <td style="padding: 1rem; font-size: 0.85rem; color: var(--text-secondary);">${new Date(l.timestamp).toLocaleString()}</td>
-          <td style="padding: 1rem; font-weight: 600;">${l.user}</td>
-          <td style="padding: 1rem;"><span class="badge badge-secondary">${l.action}</span></td>
-          <td style="padding: 1rem;"><code>${l.entity_type}:${l.entity_id}</code></td>
-          <td style="padding: 1rem; font-size: 0.85rem; color: var(--text-secondary);"><pre style="margin:0;font-size:0.75rem;">${JSON.stringify(l.details || {})}</pre></td>
-        </tr>
-      `).join('');
+      auditLogsData = logs || [];
+      auditLogsPage = 1;
+      renderAuditLogsTable();
     } catch (err) {
       tableBody.innerHTML = `<tr><td colspan="5" style="padding: 2rem; text-align:center; color:#dc2626;">Error: ${err.message}</td></tr>`;
+    }
+  }
+
+  function renderAuditLogsTable() {
+    const tableBody = document.getElementById('auditTableBody');
+    const pageInfo = document.getElementById('super-audit-info');
+    const pageNum = document.getElementById('super-audit-page-num');
+    const prevBtn = document.getElementById('super-audit-prev');
+    const nextBtn = document.getElementById('super-audit-next');
+
+    if (!auditLogsData || auditLogsData.length === 0) {
+      tableBody.innerHTML = '<tr><td colspan="5" style="padding: 2rem; text-align:center;">No platform audit entries recorded yet.</td></tr>';
+      if (pageInfo) pageInfo.textContent = 'Showing 0 platform logs';
+      if (pageNum) pageNum.textContent = 'Page 1 of 1';
+      if (prevBtn) prevBtn.disabled = true;
+      if (nextBtn) nextBtn.disabled = true;
+      return;
+    }
+
+    const total = auditLogsData.length;
+    const totalPages = Math.ceil(total / auditLogsPageSize) || 1;
+    if (auditLogsPage > totalPages) auditLogsPage = totalPages;
+    if (auditLogsPage < 1) auditLogsPage = 1;
+
+    const start = (auditLogsPage - 1) * auditLogsPageSize;
+    const pagedLogs = auditLogsData.slice(start, start + auditLogsPageSize);
+
+    tableBody.innerHTML = pagedLogs.map(l => `
+      <tr style="border-bottom: 1px solid var(--border-color);">
+        <td style="padding: 1rem; font-size: 0.85rem; color: var(--text-secondary);">${new Date(l.timestamp).toLocaleString()}</td>
+        <td style="padding: 1rem; font-weight: 600;">${l.user}</td>
+        <td style="padding: 1rem;"><span class="badge badge-secondary">${l.action}</span></td>
+        <td style="padding: 1rem;"><code>${l.entity_type}:${l.entity_id}</code></td>
+        <td style="padding: 1rem; font-size: 0.85rem; color: var(--text-secondary);"><pre style="margin:0;font-size:0.75rem;">${JSON.stringify(l.details || {})}</pre></td>
+      </tr>
+    `).join('');
+
+    if (pageInfo) {
+      const end = Math.min(start + auditLogsPageSize, total);
+      pageInfo.textContent = `Showing ${start + 1} – ${end} of ${total} platform logs`;
+    }
+
+    if (pageNum) {
+      pageNum.textContent = `Page ${auditLogsPage} of ${totalPages}`;
+    }
+
+    if (prevBtn) {
+      prevBtn.disabled = auditLogsPage <= 1;
+      prevBtn.onclick = () => {
+        if (auditLogsPage > 1) {
+          auditLogsPage--;
+          renderAuditLogsTable();
+        }
+      };
+    }
+
+    if (nextBtn) {
+      nextBtn.disabled = auditLogsPage >= totalPages;
+      nextBtn.onclick = () => {
+        if (auditLogsPage < totalPages) {
+          auditLogsPage++;
+          renderAuditLogsTable();
+        }
+      };
     }
   }
 

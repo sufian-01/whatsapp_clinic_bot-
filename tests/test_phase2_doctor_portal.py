@@ -77,12 +77,13 @@ def mock_doctor_directory():
 @pytest.fixture
 def mock_slots_repo():
     repo = MagicMock()
+    future_date = (date.today() + timedelta(days=5)).isoformat()
     slots = [
         {
             "Slot ID": "S1",
             "Doctor ID": "D1",
             "Doctor Name": "Dr. Arjun Mehta",
-            "Date": "2026-10-15",
+            "Date": future_date,
             "Start Time": "10:00 AM",
             "End Time": "10:30 AM",
             "Status": "Available",
@@ -93,7 +94,7 @@ def mock_slots_repo():
             "Slot ID": "S2",
             "Doctor ID": "D1",
             "Doctor Name": "Dr. Arjun Mehta",
-            "Date": "2026-10-15",
+            "Date": future_date,
             "Start Time": "10:30 AM",
             "End Time": "11:00 AM",
             "Status": "Booked",
@@ -104,7 +105,7 @@ def mock_slots_repo():
             "Slot ID": "S3",
             "Doctor ID": "D2",
             "Doctor Name": "Dr. Sana Khan",
-            "Date": "2026-10-15",
+            "Date": future_date,
             "Start Time": "02:00 PM",
             "End Time": "02:30 PM",
             "Status": "Available",
@@ -383,11 +384,13 @@ def test_doctor_slot_creation_valid(crm_services):
 
 def test_doctor_slot_creation_overlap_prevention(crm_services):
     crm, _, _, _ = crm_services
-    # S1 is 10:00 AM - 10:30 AM on 2026-10-15 for D1
+    slot = crm.slots.get_slot_by_id("S1")
+    slot_date = slot["Date"] if slot else (date.today() + timedelta(days=5)).isoformat()
+    # S1 is 10:00 AM - 10:30 AM for D1
     with pytest.raises(ValueError, match="overlaps with existing slot"):
         crm.create_doctor_slot(
             doctor_id="D1",
-            date_val="2026-10-15",
+            date_val=slot_date,
             start_time="10:15 AM",
             end_time="10:45 AM",
             user="dr_arjun",

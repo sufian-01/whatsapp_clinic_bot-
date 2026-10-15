@@ -107,6 +107,10 @@ class TenantAdminCreateRequest(BaseModel):
     email: Optional[str] = ""
 
 
+class TenantWhatsAppVerifyRequest(BaseModel):
+    phone_number_id: Optional[str] = None
+
+
 
 # ---------------------------------------------------------------------------
 # Router Factory
@@ -115,6 +119,7 @@ class TenantAdminCreateRequest(BaseModel):
 def create_super_admin_router(
     service: TenantManagementService,
     settings: Settings,
+    whatsapp_client: Optional[Any] = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/super-admin", tags=["super-admin"])
 
@@ -232,6 +237,39 @@ def create_super_admin_router(
             return service.update_tenant(tenant_id, payload.model_dump(exclude_unset=True), admin_user=current_admin["username"])
         except ValueError as err:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err))
+
+    @router.post("/tenants/{tenant_id}/whatsapp/verify")
+    async def verify_tenant_whatsapp(
+        tenant_id: str,
+        payload: Optional[TenantWhatsAppVerifyRequest] = None,
+        current_admin: dict = Depends(require_super_admin),
+    ) -> Dict[str, Any]:
+        """Test and verify Meta WhatsApp Cloud API connection status for a clinic."""
+        tenant = service.get_tenant(tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tenant '{tenant_id}' not found.")
+
+        target_pid = (payload.phone_number_id if payload and payload.phone_number_id else tenant.get("whatsapp_phone_number_id")) or ""
+        target_pid = target_pid.strip()
+        if not target_pid:
+            return {
+                "success": False,
+                "status_code": 0,
+                "data": None,
+                "error": "No WhatsApp Phone Number ID provided or configured for this clinic.",
+            }
+
+        client = whatsapp_client
+        if not client:
+            from ..channels.whatsapp.client import MetaWhatsAppClient
+            client = MetaWhatsAppClient(
+                access_token=settings.whatsapp_access_token,
+                api_version=settings.whatsapp_api_version,
+                phone_number_id=target_pid,
+                default_country_code=settings.whatsapp_default_country_code,
+            )
+
+        return client.verify_phone_number(target_pid)
 
     @router.post("/tenants/{tenant_id}/activate")
     async def activate_tenant(

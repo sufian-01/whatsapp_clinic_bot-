@@ -12,7 +12,6 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.admin import create_admin_router
 from .api.knowledge import create_knowledge_router
-from .api.webhook import create_webhook_router
 from .core.auth import get_current_admin
 from .core.config import get_settings, validate_settings
 from .core.logging import configure_logging
@@ -22,7 +21,6 @@ from .llm.gemini import GeminiClient
 from .rag.service import RagService
 from .services.crm_service import CrmService
 from .services.sarvam_service import SarvamService
-from .telegram.bot import TelegramBot
 from .tools.appointments import AppointmentTools
 from .tools.doctors import DoctorDirectory, DoctorTools
 from .tools.gmail import GmailTools
@@ -176,7 +174,6 @@ def create_app() -> FastAPI:
         clinic_timezone=settings.clinic_timezone,
         crm_service=crm_service,
     ))
-    bot = TelegramBot(settings.telegram_bot_token)
     sarvam = SarvamService.from_settings(settings)
 
     app = FastAPI(title=f"{settings.clinic_name} AI Assistant & CRM")
@@ -226,8 +223,7 @@ def create_app() -> FastAPI:
             "recent": entries[-20:],
         }
 
-    # 1. Existing Webhook & Knowledge Routers
-    app.include_router(create_webhook_router(settings, graph, bot, sarvam))
+    # 1. Knowledge Base Router
     app.include_router(create_knowledge_router(settings.knowledge_dir / "uploads", rag))
 
     # 1b. Tenant Management & Super Admin Service (initialized early for dynamic WhatsApp routing)
@@ -268,7 +264,7 @@ def create_app() -> FastAPI:
     app.include_router(create_doctor_router(crm_service, settings))
 
     # 3. Super Admin & Platform Tenant Management Service & Router
-    app.include_router(create_super_admin_router(tenant_mgmt_service, settings))
+    app.include_router(create_super_admin_router(tenant_mgmt_service, settings, whatsapp_client=whatsapp_client))
 
 
     # 4. Mount CRM & Super Admin Frontend static files

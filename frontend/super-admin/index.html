@@ -344,6 +344,15 @@
                 <tr><td colspan="5" class="empty-state-cell">Loading platform audit logs...</td></tr>
               </tbody>
             </table>
+            <!-- Super Admin Audit Logs Pagination Bar -->
+            <div id="super-audit-pagination" class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border-light); background: var(--bg-surface);">
+              <div id="super-audit-info" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Showing 0 platform logs</div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <button id="super-audit-prev" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12px;">&larr; Previous</button>
+                <span id="super-audit-page-num" style="font-size: 13px; font-weight: 600; padding: 0 4px; color: var(--text-main);">Page 1 of 1</span>
+                <button id="super-audit-next" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12px;">Next &rarr;</button>
+              </div>
+            </div>
           </div>
         </div>
       </main>
@@ -466,6 +475,13 @@
                   <input type="text" id="m_waWaba" class="form-input" placeholder="1622783805893018" />
                 </div>
               </div>
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--border-light);">
+                <button type="button" id="btnTestWhatsAppConnection" class="btn btn-secondary btn-sm" style="display: inline-flex; align-items: center; gap: 6px;">
+                  <span>⚡</span> Test Meta Connection
+                </button>
+                <span style="font-size: 11px; color: var(--text-tertiary);">Verifies Meta Cloud API access & health</span>
+              </div>
+              <div id="waConnectionStatus" style="display: none; margin-top: 8px; font-size: 12px; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid transparent;"></div>
             </div>
           </div>
 

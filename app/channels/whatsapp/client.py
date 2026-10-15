@@ -362,3 +362,58 @@ class MetaWhatsAppClient:
         }
         return self._post_with_retry(payload, phone_number_id)
 
+    def verify_phone_number(self, phone_number_id: Optional[str] = None) -> Dict[str, Any]:
+        """Query Meta Graph API to verify WhatsApp phone number connection & health status."""
+        pid = (phone_number_id or self.phone_number_id).strip()
+        if not self.access_token:
+            return {
+                "success": False,
+                "status_code": 0,
+                "data": None,
+                "error": "WhatsApp Access Token is not configured in platform settings.",
+            }
+        if not pid:
+            return {
+                "success": False,
+                "status_code": 0,
+                "data": None,
+                "error": "WhatsApp Phone Number ID is missing or empty.",
+            }
+        url = f"https://graph.facebook.com/{self.api_version}/{pid}"
+        headers = self._get_headers()
+        try:
+            res = self._client.get(url, headers=headers)
+            if res.status_code == 200:
+                data = res.json()
+                return {
+                    "success": True,
+                    "status_code": 200,
+                    "data": {
+                        "verified_name": data.get("verified_name") or data.get("name") or "Verified WhatsApp Business Account",
+                        "display_phone_number": data.get("display_phone_number") or "",
+                        "quality_rating": data.get("quality_rating") or "UNKNOWN",
+                        "code_verification_status": data.get("code_verification_status") or "VERIFIED",
+                        "id": data.get("id") or pid,
+                    },
+                    "error": None,
+                }
+            err_msg = res.text
+            try:
+                err_data = res.json()
+                err_msg = err_data.get("error", {}).get("message", res.text)
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "status_code": res.status_code,
+                "data": None,
+                "error": f"Meta Graph API Error ({res.status_code}): {err_msg}",
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "status_code": 0,
+                "data": None,
+                "error": f"Network connection error: {str(exc)}",
+            }
+

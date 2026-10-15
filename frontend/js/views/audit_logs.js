@@ -8,6 +8,10 @@ import { Modal, Toast, formatDateTime } from "../utils.js";
 export const AuditLogsView = {
   currentFilterAction: "",
   currentFilterEntity: "",
+  page: 1,
+  pageSize: 15,
+  total: 0,
+  totalPages: 1,
 
   async init() {
     const container = document.getElementById("view-audit-logs");
@@ -78,6 +82,27 @@ export const AuditLogsView = {
               </tbody>
             </table>
           </div>
+
+          <!-- Audit Logs Pagination Controls -->
+          <div id="audit-pagination-bar" class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--border-color); background: var(--bg-surface);">
+            <div id="audit-page-info" style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">
+              Showing 0 logs
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center;">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <label for="audit-page-size" style="font-size: 12px; color: var(--text-secondary);">Per page:</label>
+                <select id="audit-page-size" class="form-input" style="padding: 4px 8px; font-size: 12px; width: auto; height: 32px;">
+                  <option value="15" selected>15</option>
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+              <button id="audit-prev-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">&larr; Previous</button>
+              <span id="audit-page-num" style="font-size: 13px; font-weight: 600; padding: 0 4px; color: var(--text-main);">Page 1 of 1</span>
+              <button id="audit-next-btn" class="btn btn-secondary btn-sm" disabled style="padding: 4px 12px; font-size: 12.5px;">Next &rarr;</button>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -91,27 +116,57 @@ export const AuditLogsView = {
 
     document.getElementById("audit-filter-action")?.addEventListener("change", (e) => {
       this.currentFilterAction = e.target.value;
+      this.page = 1;
       this.loadLogs();
     });
 
     document.getElementById("audit-filter-entity")?.addEventListener("change", (e) => {
       this.currentFilterEntity = e.target.value;
+      this.page = 1;
       this.loadLogs();
+    });
+
+    document.getElementById("audit-page-size")?.addEventListener("change", (e) => {
+      this.pageSize = parseInt(e.target.value, 10) || 15;
+      this.page = 1;
+      this.loadLogs();
+    });
+
+    document.getElementById("audit-prev-btn")?.addEventListener("click", () => {
+      if (this.page > 1) {
+        this.page--;
+        this.loadLogs();
+      }
+    });
+
+    document.getElementById("audit-next-btn")?.addEventListener("click", () => {
+      if (this.page < this.totalPages) {
+        this.page++;
+        this.loadLogs();
+      }
     });
   },
 
   async loadLogs() {
     const tbody = document.getElementById("audit-logs-tbody");
     if (!tbody) return;
-    tbody.innerHTML = `<tr><td colspan="6" class="text-center">Loading audit history...</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center" style="padding: 24px;">Loading audit history...</td></tr>`;
 
     try {
-      const params = { limit: 100 };
+      const params = {
+        page: this.page,
+        page_size: this.pageSize,
+      };
       if (this.currentFilterAction) params.action = this.currentFilterAction;
       if (this.currentFilterEntity) params.entity_type = this.currentFilterEntity;
 
       const data = await API.getAuditLogs(params);
-      const logs = data.logs || [];
+      const logs = data.logs || (Array.isArray(data) ? data : []);
+      this.total = data.total !== undefined ? data.total : logs.length;
+      this.totalPages = data.total_pages || Math.ceil(this.total / this.pageSize) || 1;
+      this.page = data.page || this.page;
+
+      this.updatePaginationUI();
 
       if (logs.length === 0) {
         tbody.innerHTML = `<tr><td colspan="6" class="text-center" style="padding: 30px; color: var(--text-secondary);">No audit logs found matching filters.</td></tr>`;
@@ -145,9 +200,9 @@ export const AuditLogsView = {
       }).join("");
 
       // Bind modal triggers for detail inspection
-      document.querySelectorAll(".btn-audit-detail").forEach((btn) => {
+      tbody.querySelectorAll(".btn-audit-detail").forEach((btn) => {
         btn.addEventListener("click", (e) => {
-          const logId = e.target.getAttribute("data-log-id");
+          const logId = e.currentTarget.getAttribute("data-log-id");
           const log = logs.find((l) => l.id === logId);
           if (log) {
             this.showDetailModal(log);
@@ -156,6 +211,36 @@ export const AuditLogsView = {
       });
     } catch (err) {
       Toast.error("Failed to fetch audit logs: " + err.message);
+      tbody.innerHTML = `<tr><td colspan="6" class="text-center" style="padding: 24px; color: var(--danger-text);">Failed to load audit history: ${err.message}</td></tr>`;
+    }
+  },
+
+  updatePaginationUI() {
+    const pageInfo = document.getElementById("audit-page-info");
+    const pageNum = document.getElementById("audit-page-num");
+    const prevBtn = document.getElementById("audit-prev-btn");
+    const nextBtn = document.getElementById("audit-next-btn");
+
+    if (pageInfo) {
+      if (this.total === 0) {
+        pageInfo.textContent = "Showing 0 logs";
+      } else {
+        const start = (this.page - 1) * this.pageSize + 1;
+        const end = Math.min(this.page * this.pageSize, this.total);
+        pageInfo.textContent = `Showing ${start} – ${end} of ${this.total} logs`;
+      }
+    }
+
+    if (pageNum) {
+      pageNum.textContent = `Page ${this.page} of ${this.totalPages}`;
+    }
+
+    if (prevBtn) {
+      prevBtn.disabled = this.page <= 1;
+    }
+
+    if (nextBtn) {
+      nextBtn.disabled = this.page >= this.totalPages;
     }
   },
 

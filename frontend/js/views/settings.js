@@ -59,8 +59,8 @@ export const SettingsView = {
           <div class="card-body" style="font-size: 13.5px; line-height: 1.6;">
             <div style="display:flex; flex-direction:column; gap:10px;">
               <div><strong>Backend API Status:</strong> <span id="health-status-badge" class="badge badge-completed">Checking...</span></div>
-              <div><strong>Google Sheets Source:</strong> Connected as clinic database</div>
-              <div><strong>Telegram Bot Service:</strong> Active webhook listener</div>
+              <div><strong>Primary Channel:</strong> Meta WhatsApp Cloud API (Multi-Tenant Routing)</div>
+              <div><strong>Database Engine:</strong> PostgreSQL (Isolated Multi-Tenant RLS)</div>
               <div><strong>Email Service:</strong> Google Gmail API delivery</div>
               <div><strong>Payment Processing:</strong> Offline UPI QR with manual clinic verification</div>
             </div>
