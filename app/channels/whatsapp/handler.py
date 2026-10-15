@@ -23,10 +23,23 @@ import time
 from typing import Any, Dict, List, Optional, Set
 
 from ...core.config import Settings
+from ...core.feature_flags import (
+    FEATURE_CANCELLATION,
+    FEATURE_INTERACTIVE_LISTS,
+    FEATURE_ONLINE_PAYMENTS,
+    FEATURE_RAG_KNOWLEDGE,
+    FEATURE_RESCHEDULING,
+    FEATURE_VOICE_INBOUND,
+    FEATURE_VOICE_OUTBOUND,
+    get_disabled_feature_message,
+    is_feature_enabled,
+    resolve_effective_feature_flags,
+)
 from ...core.tenant import tenant_scope
 from ...telegram.sessions import SessionStore
 from .client import MetaWhatsAppClient, normalize_phone_number
 from .models import WhatsAppMessage, WhatsAppValue
+
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +84,7 @@ class WhatsAppHandler:
         audit_service: Optional[Any] = None,
         repository: Optional[Any] = None,
         sarvam: Optional[Any] = None,
+        tenant_management_service: Optional[Any] = None,
     ):
         self.settings = settings
         self.graph = graph
@@ -84,6 +98,7 @@ class WhatsAppHandler:
         self.audit = audit_service
         self.repository = repository
         self.sarvam = sarvam
+        self.tenant_mgmt_service = tenant_management_service
         if self.sarvam is None:
             try:
                 from ...services.sarvam_service import SarvamService
@@ -114,10 +129,44 @@ class WhatsAppHandler:
         """Resolve receiving business phone number ID to tenant ID.
 
         Enforces strict fail-closed routing: returns None if phone_number_id is unmapped.
+        Checks dynamic database-backed TenantManagementService first, falling back to static config.
         """
+        clean_pid = str(phone_number_id).strip() if phone_number_id else ""
+        if not clean_pid:
+            return None
+
+        # 1. Dynamic lookup from TenantManagementService (backed by DB & cache)
+        if self.tenant_mgmt_service:
+            dynamic_tid = self.tenant_mgmt_service.resolve_tenant_by_phone_number_id(clean_pid)
+            if dynamic_tid:
+                return dynamic_tid
+
+        # 2. Static configuration fallback (.env WHATSAPP_TENANT_PHONE_MAP)
         mapping = self.settings.get_whatsapp_tenant_mapping()
-        tenant_id = mapping.get(str(phone_number_id).strip())
+        tenant_id = mapping.get(clean_pid)
         return tenant_id if tenant_id else None
+
+    def _get_tenant_flags(self, tenant_id: Optional[str]) -> Dict[str, bool]:
+        if tenant_id and self.tenant_mgmt_service:
+            return self.tenant_mgmt_service.get_tenant_feature_flags(tenant_id)
+        # When no tenant_mgmt_service is injected (e.g., unit tests), default to full capabilities
+        return resolve_effective_feature_flags("ENTERPRISE", {})
+
+
+    def _get_clinic_name(self, tenant_id: Optional[str]) -> str:
+        if tenant_id and self.tenant_mgmt_service:
+            t = self.tenant_mgmt_service.get_tenant(tenant_id)
+            if t and t.get("name"):
+                return t["name"]
+        return self.settings.clinic_name
+
+    def _get_support_phone(self, tenant_id: Optional[str]) -> str:
+        if tenant_id and self.tenant_mgmt_service:
+            t = self.tenant_mgmt_service.get_tenant(tenant_id)
+            if t and t.get("phone"):
+                return t["phone"]
+        return self.settings.support_phone or "the clinic reception"
+
 
     async def handle_value(self, value: WhatsAppValue) -> None:
         """Process a WhatsApp webhook 'value' payload containing messages or statuses."""
@@ -213,6 +262,9 @@ class WhatsAppHandler:
             return
 
         sender_phone = normalize_phone_number(message.from_, self.settings.whatsapp_default_country_code) or message.from_
+        flags = self._get_tenant_flags(tenant_id)
+        clinic_name = self._get_clinic_name(tenant_id)
+        support_phone = self._get_support_phone(tenant_id)
 
         # 1. Check if incoming message is a voice note / audio
         is_voice_inbound = False
@@ -220,11 +272,18 @@ class WhatsAppHandler:
         is_unsupported = False
 
         if message.type in ("audio", "voice"):
+            if not is_feature_enabled(flags, FEATURE_VOICE_INBOUND):
+                logger.info("[WHATSAPP AUDIO] Feature 'voice_inbound' disabled for tenant=%s", tenant_id)
+                disabled_msg = get_disabled_feature_message(FEATURE_VOICE_INBOUND, clinic_name, support_phone)
+                self.client.send_text(sender_phone, disabled_msg, phone_number_id=phone_number_id)
+                return
+
             audio_obj = message.audio or message.voice
             media_id = audio_obj.id if audio_obj else None
             if not media_id:
                 logger.warning("[WHATSAPP AUDIO] Received audio message without media_id")
                 return
+
 
             logger.info("=" * 60)
             logger.info(">>> [STEP 1: INBOUND VOICE MESSAGE]")
@@ -367,6 +426,10 @@ class WhatsAppHandler:
             state["channel"] = "whatsapp"
             state["phone"] = sender_phone
             state["tenant_id"] = tenant_id
+            state["feature_flags"] = flags
+            state["clinic_name"] = clinic_name
+            state["support_phone"] = support_phone
+
 
             history = list(state.get("messages", []))
             history.append({"role": "user", "content": user_input})
@@ -463,6 +526,8 @@ class WhatsAppHandler:
         conversation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Render AI output into appropriate WhatsApp format (Interactive List, Buttons, Voice Note, or Card)."""
+        flags = self._get_tenant_flags(tenant_id)
+        clinic_name = self._get_clinic_name(tenant_id)
         effective_phone_id = phone_number_id if phone_number_id else self.settings.whatsapp_phone_number_id
         logger.info("=" * 60)
         logger.info(">>> [STEP 4: OUTBOUND DISPATCH]")
@@ -471,8 +536,8 @@ class WhatsAppHandler:
         logger.info("[WHATSAPP SEND] recipient=%s", recipient)
         logger.info("[WHATSAPP SEND] is_voice=%s", is_voice)
 
-        # 1. If patient sent a voice message, synthesize and send a voice reply first
-        if is_voice and self.sarvam and getattr(self.sarvam, "available", False):
+        # 1. If patient sent a voice message, synthesize and send a voice reply first (if voice_outbound enabled)
+        if is_voice and is_feature_enabled(flags, FEATURE_VOICE_OUTBOUND) and self.sarvam and getattr(self.sarvam, "available", False):
             try:
                 tts_text = _clean_text_for_speech(response_text)
                 if tts_text:
@@ -511,10 +576,12 @@ class WhatsAppHandler:
                 logger.warning("Voice reply generation or sending failed: %s", e)
 
         # 2. Determine rich interactive messaging based on graph state UI
-        ui = state.get("ui", "")
-        step = state.get("appointment_step", "")
+        interactive_enabled = is_feature_enabled(flags, FEATURE_INTERACTIVE_LISTS)
+        ui = state.get("ui", "") if interactive_enabled else ""
+        step = state.get("appointment_step", "") if interactive_enabled else ""
         msg_type = "text"
         res: Dict[str, Any] = {}
+
 
         # CASE A: Doctor selection interactive list
         if ui == "doctor_select" and state.get("doctor_choices"):
@@ -610,11 +677,17 @@ class WhatsAppHandler:
 
         # CASE D: Payment step
         elif ui == "payment" or step == "payment":
-            buttons = [
-                {"id": "payment_offline", "title": "Pay at Clinic"},
-                {"id": "payment_online", "title": "Pay Online"},
-            ]
+            if is_feature_enabled(flags, FEATURE_ONLINE_PAYMENTS):
+                buttons = [
+                    {"id": "payment_offline", "title": "Pay at Clinic"},
+                    {"id": "payment_online", "title": "Pay Online"},
+                ]
+            else:
+                buttons = [
+                    {"id": "payment_offline", "title": "Pay at Clinic"},
+                ]
             logger.info(">>> [OUTBOUND INTERACTIVE] Sending Payment Options Buttons")
+
             res = self.client.send_interactive_buttons(
                 to=recipient,
                 body=_format_whatsapp_markdown(response_text)[:1024],

@@ -94,3 +94,38 @@ class RagService:
         self._store = LocalVectorStore.from_chunks(split_documents(self._documents))
         self._store.save(self._vectorstore_dir)
         return len(self._store.chunks)
+
+    def rebuild_index(self) -> int:
+        """Re-scan knowledge directory (txt, md, pdf), split documents, and refresh vectorstore."""
+        if not self._knowledge_dir.exists():
+            self._documents = []
+            self._store = LocalVectorStore.from_chunks([])
+            return 0
+
+        documents: list[str] = []
+        for path in sorted(self._knowledge_dir.rglob("*")):
+            if path.is_file():
+                if path.suffix.lower() in {".txt", ".md"}:
+                    try:
+                        documents.append(path.read_text(encoding="utf-8"))
+                    except Exception as exc:
+                        logger.warning("Failed to read text document %s: %s", path, exc)
+                elif path.suffix.lower() == ".pdf":
+                    from .pdf import extract_pdf_text
+                    try:
+                        pdf_text = extract_pdf_text(path)
+                        if pdf_text:
+                            documents.append(pdf_text)
+                    except Exception as exc:
+                        logger.warning("Failed to extract PDF %s: %s", path, exc)
+
+        self._documents = documents
+        if self.is_available():
+            chunks = split_documents(documents) if documents else []
+            self._store = LocalVectorStore.from_chunks(chunks)
+            if self._vectorstore_dir:
+                self._store.save(self._vectorstore_dir)
+            return len(chunks)
+        else:
+            self._store = LocalVectorStore.from_chunks([])
+            return len(documents)

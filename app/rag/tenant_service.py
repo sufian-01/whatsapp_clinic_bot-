@@ -49,9 +49,14 @@ class TenantRagService:
         """Retrieve relevant context for conversational prompting."""
         return self._inner.get_relevant_context(query, k=k)
 
-    def ingest_pdf(self, file_path: Path, filename: str) -> int:
+    def ingest_pdf(self, file_path: Path, filename: str = "") -> int:
         """Ingest a PDF document into this tenant's isolated knowledge base."""
-        return self._inner.ingest_pdf(file_path, filename)
+        return self._inner.ingest_pdf(file_path)
+
+    def rebuild_index(self) -> int:
+        """Re-index all documents in this tenant's isolated knowledge directory."""
+        return self._inner.rebuild_index()
+
 
 
 class TenantRagRegistry:

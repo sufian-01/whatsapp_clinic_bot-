@@ -100,10 +100,16 @@ class GraphNodes:
     # ------------------------------------------------------------------
 
     def retrieve(self, state: GraphState) -> GraphState:
+        flags = state.get("feature_flags", {})
+        from ..core.feature_flags import is_feature_enabled
+        if not is_feature_enabled(flags, "rag_knowledge"):
+            logger.info("RAG knowledge search disabled by feature flags")
+            return {**state, "clinic_context": []}
         logger.info("RAG tool invoked")
         context = search_clinic_knowledge(self._rag, state.get("user_text", ""))
         logger.info("Retrieved %d chunks", len(context))
         return {**state, "clinic_context": context}
+
 
     # ------------------------------------------------------------------
     # doctor_lookup  (for doctor_information intent)
@@ -525,11 +531,21 @@ class GraphNodes:
             return {**state, "patient_id": patient_id, "token_no": token_no, "appointment_step": "payment", "ui": "payment", "response": "Your slot is reserved. Please choose a payment method."}
 
         if step == "payment":
+            flags = state.get("feature_flags", {})
+            from ..core.feature_flags import is_feature_enabled
             if text.casefold() in {"online", "payment_online"}:
+                if not is_feature_enabled(flags, "online_payments"):
+                    return {
+                        **state,
+                        "appointment_step": "payment",
+                        "ui": "payment",
+                        "response": "Online payment is currently disabled for this clinic. Please select 'Pay at Clinic' (Offline) to confirm your appointment.",
+                    }
                 payment = self._payments.create_online_payment(state.get("amount", "")) if self._payments else {"success": False, "status": "NOT_IMPLEMENTED", "message": "Online payment will be available soon."}
                 if self._slots:
                     self._release_slot(state.get("slot_id", ""), state.get("patient_id"))
                 return {**state, "appointment_step": "payment", "ui": "payment", "response": payment.get("message", "Online payment will be available soon. Please choose Offline Payment for now.")}
+
             offline_phrases = {"offline", "payment_offline", "pay at clinic", "clinic", "cash", "pay offline", "later"}
             if any(p in text.casefold() for p in offline_phrases):
                 return self._complete_offline(state)
@@ -875,8 +891,21 @@ class GraphNodes:
         return appts, ident
 
     def reschedule_node(self, state: GraphState) -> GraphState:
+        flags = state.get("feature_flags", {})
+        clinic_name = state.get("clinic_name", self._clinic_name)
+        support_phone = state.get("support_phone", self._support_phone)
+        from ..core.feature_flags import is_feature_enabled, get_disabled_feature_message
+        if not is_feature_enabled(flags, "rescheduling"):
+            return {
+                **state,
+                "reschedule_step": "",
+                "ui": "main",
+                "response": get_disabled_feature_message("rescheduling", clinic_name, support_phone),
+            }
+
         step = state.get("reschedule_step")
         text = state.get("user_text", "").strip()
+
 
         # STEP: Ask identifier
         if step == "ask_identifier":
@@ -1156,8 +1185,21 @@ class GraphNodes:
         }
 
     def cancel_node(self, state: GraphState) -> GraphState:
+        flags = state.get("feature_flags", {})
+        clinic_name = state.get("clinic_name", self._clinic_name)
+        support_phone = state.get("support_phone", self._support_phone)
+        from ..core.feature_flags import is_feature_enabled, get_disabled_feature_message
+        if not is_feature_enabled(flags, "cancellation"):
+            return {
+                **state,
+                "cancel_step": "",
+                "ui": "main",
+                "response": get_disabled_feature_message("cancellation", clinic_name, support_phone),
+            }
+
         step = state.get("cancel_step")
         text = state.get("user_text", "").strip()
+
 
         # STEP: Ask identifier
         if step == "ask_identifier":

@@ -230,7 +230,12 @@ def create_app() -> FastAPI:
     app.include_router(create_webhook_router(settings, graph, bot, sarvam))
     app.include_router(create_knowledge_router(settings.knowledge_dir / "uploads", rag))
 
-    # 1b. Meta WhatsApp Cloud API Channel Router
+    # 1b. Tenant Management & Super Admin Service (initialized early for dynamic WhatsApp routing)
+    from .services.tenant_management_service import TenantManagementService
+    from .api.super_admin import create_super_admin_router
+    tenant_mgmt_service = TenantManagementService(audit_service=crm_service.audit, session_factory=session_factory)
+
+    # 1c. Meta WhatsApp Cloud API Channel Router
     from .channels.whatsapp.client import MetaWhatsAppClient
     from .channels.whatsapp.handler import WhatsAppHandler
     from .channels.whatsapp.router import create_whatsapp_router
@@ -253,6 +258,7 @@ def create_app() -> FastAPI:
         repository=whatsapp_repo,
         audit_service=crm_service.audit,
         sarvam=sarvam,
+        tenant_management_service=tenant_mgmt_service,
     )
     app.include_router(create_whatsapp_router(settings, whatsapp_handler))
 
@@ -262,12 +268,8 @@ def create_app() -> FastAPI:
     app.include_router(create_doctor_router(crm_service, settings))
 
     # 3. Super Admin & Platform Tenant Management Service & Router
-    from .services.tenant_management_service import TenantManagementService
-    from .api.super_admin import create_super_admin_router
-    from .db.session import is_db_configured, get_session_factory, get_engine
-    session_factory = get_session_factory() if is_db_configured() else None
-    tenant_mgmt_service = TenantManagementService(audit_service=crm_service.audit, session_factory=session_factory)
     app.include_router(create_super_admin_router(tenant_mgmt_service, settings))
+
 
     # 4. Mount CRM & Super Admin Frontend static files
     frontend_dir = ROOT_DIR / "frontend"
@@ -277,6 +279,10 @@ def create_app() -> FastAPI:
             return RedirectResponse(url="/admin/")
 
         app.mount("/admin", StaticFiles(directory=str(frontend_dir), html=True), name="admin")
+
+        css_dir = frontend_dir / "css"
+        if css_dir.exists():
+            app.mount("/css", StaticFiles(directory=str(css_dir)), name="css")
 
         super_admin_dir = frontend_dir / "super-admin"
         if super_admin_dir.exists():

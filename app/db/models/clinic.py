@@ -1,8 +1,7 @@
-"""Clinic / Tenant domain model."""
-
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -43,6 +42,17 @@ class Clinic(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     booking_settings: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     rag_config_status: Mapped[str] = mapped_column(String(50), default="CONFIGURED", nullable=False)
     channel_config_status: Mapped[str] = mapped_column(String(50), default="CONFIGURED", nullable=False)
+
+    # WhatsApp Channel Multi-Tenant Routing
+    whatsapp_phone_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    whatsapp_phone_number_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, unique=True, index=True)
+    whatsapp_waba_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    # SaaS Subscription & Granular Feature Flags
+    subscription_plan: Mapped[str] = mapped_column(String(50), default="STARTER", nullable=False)
+    subscription_status: Mapped[str] = mapped_column(String(50), default="ACTIVE", nullable=False)
+    subscription_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    feature_flags: Mapped[Optional[str]] = mapped_column(Text, default="{}", nullable=True)
 
     def activate(self) -> None:
         """Activate clinic tenant."""

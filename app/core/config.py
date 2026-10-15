@@ -121,7 +121,7 @@ def get_settings() -> Settings:
         sarvam_max_voice_bytes=int(os.getenv("SARVAM_MAX_VOICE_BYTES", str(10 * 1024 * 1024))),
         sarvam_max_voice_duration_seconds=int(os.getenv("SARVAM_MAX_VOICE_DURATION_SECONDS", "30")),
         super_admin_username=os.getenv("SUPER_ADMIN_USERNAME", "superadmin"),
-        super_admin_password=os.getenv("SUPER_ADMIN_PASSWORD", "superadmin123"),
+        super_admin_password=os.getenv("SUPER_ADMIN_PASSWORD") or "AdminSecret2026!",
         super_admin_password_hash=os.getenv("SUPER_ADMIN_PASSWORD_HASH", ""),
         crm_admin_username=os.getenv("CRM_ADMIN_USERNAME", "admin"),
         crm_admin_password=os.getenv("CRM_ADMIN_PASSWORD", "admin123"),

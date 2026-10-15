@@ -1,72 +1,66 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Platform Super Admin Login | Multi-Tenant Clinic SaaS</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <script>try{var t=localStorage.getItem('crm_theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
-  <link rel="stylesheet" href="../css/variables.css">
-  <link rel="stylesheet" href="../css/base.css">
-  <link rel="stylesheet" href="../css/components.css">
-  <link rel="stylesheet" href="../css/views.css">
-  <style>
-    .login-container {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      padding: 1.5rem;
-      background: var(--bg-app);
-    }
-    .platform-card {
-      width: 100%;
-      max-width: 440px;
-      padding: 2.5rem;
-      background: var(--bg-surface);
-      border: 1px solid var(--border-color);
-      border-radius: var(--radius-lg);
-      box-shadow: var(--shadow-xl);
-    }
-    .platform-badge {
-      display: inline-block;
-      padding: 0.25rem 0.75rem;
-      font-size: 0.75rem;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: #fff;
-      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-      border-radius: 9999px;
-      margin-bottom: 1rem;
-    }
-  </style>
+  <title>Kodnexus Platform — Super Admin Login</title>
+  <link rel="stylesheet" href="/admin/css/variables.css" />
+  <link rel="stylesheet" href="/admin/css/base.css" />
+  <link rel="stylesheet" href="/admin/css/components.css" />
+  <link rel="stylesheet" href="/admin/css/views.css" />
 </head>
-<body>
-  <div class="login-container">
-    <div class="platform-card">
-      <div style="text-align: center; margin-bottom: 2rem;">
-        <span class="platform-badge">Platform Console</span>
-        <h1 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem;">Super Admin Portal</h1>
-        <p style="color: var(--text-secondary); font-size: 0.875rem;">Manage multi-tenant clinics, facilities, and platform configuration</p>
+<body class="login-body">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-icon" style="background: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%); color: #fff; width: 52px; height: 52px; font-size: 24px; border-radius: var(--radius-lg); margin: 0 auto 12px; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-md);">🌐</div>
+      <h1 class="login-title" style="letter-spacing: -0.5px; font-size: 22px;">KODNEXUS</h1>
+      <div style="margin-top: 4px;">
+        <span class="badge" style="background: linear-gradient(135deg, #4f46e5 0%, #06b6d4 100%); color: #fff; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; padding: 3px 10px; border-radius: 999px;">HEALTHCARE AI CLOUD</span>
+      </div>
+      <p class="login-subtitle" style="margin-top: 10px; font-size: 13px;">Super Admin Console • Platform administration & clinic provisioning</p>
+    </div>
+
+    <div id="alertBox" class="login-alert alert-error"></div>
+
+    <form id="loginForm">
+      <div class="form-group">
+        <label for="username" class="form-label">Platform Username</label>
+        <input
+          type="text"
+          id="username"
+          name="username"
+          class="form-input"
+          placeholder="superadmin"
+          autocomplete="username"
+          required
+          autofocus
+        />
       </div>
 
-      <div id="alertBox" style="display: none; padding: 0.75rem; border-radius: var(--radius-md); margin-bottom: 1rem; font-size: 0.875rem; background: #fee2e2; color: #b91c1c; border: 1px solid #f87171;"></div>
+      <div class="form-group" style="margin-top: 16px;">
+        <label for="password" class="form-label">Platform Password</label>
+        <input
+          type="password"
+          id="password"
+          name="password"
+          class="form-input"
+          placeholder="••••••••"
+          autocomplete="current-password"
+          required
+        />
+      </div>
 
-      <form id="loginForm">
-        <div class="form-group" style="margin-bottom: 1.25rem;">
-          <label class="form-label" for="username">Platform Username</label>
-          <input class="form-control" type="text" id="username" name="username" placeholder="superadmin" required autofocus>
-        </div>
-
-        <div class="form-group" style="margin-bottom: 1.75rem;">
-          <label class="form-label" for="password">Platform Password</label>
-          <input class="form-control" type="password" id="password" name="password" placeholder="••••••••" required>
-        </div>
-
-        <button type="submit" id="submitBtn" class="btn btn-primary" style="width: 100%; justify-content: center;">
-          Sign In to Platform
+      <div style="margin-top: 24px;">
+        <button type="submit" id="submitBtn" class="btn btn-primary" style="width: 100%; height: 42px; font-size: 14px; font-weight: 600;">
+          <span id="btnText">Sign In to Platform</span>
+          <span id="btnSpinner" class="spinner" style="display: none;"></span>
         </button>
-      </form>
+      </div>
+    </form>
+
+    <div class="login-footer-hint">
+      Restricted to platform super administrators. Access is cryptographically audited.
     </div>
   </div>
 
@@ -74,12 +68,16 @@
     const form = document.getElementById('loginForm');
     const alertBox = document.getElementById('alertBox');
     const submitBtn = document.getElementById('submitBtn');
+    const btnText = document.getElementById('btnText');
+    const btnSpinner = document.getElementById('btnSpinner');
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       alertBox.style.display = 'none';
+      alertBox.textContent = '';
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Authenticating...';
+      btnText.style.display = 'none';
+      btnSpinner.style.display = 'inline-block';
 
       try {
         const res = await fetch('/api/super-admin/auth/login', {
@@ -104,7 +102,8 @@
         alertBox.style.display = 'block';
       } finally {
         submitBtn.disabled = false;
-        submitBtn.textContent = 'Sign In to Platform';
+        btnText.style.display = 'inline';
+        btnSpinner.style.display = 'none';
       }
     });
   </script>

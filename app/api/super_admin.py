@@ -6,7 +6,7 @@ Strictly protected by `require_super_admin`.
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
 from ..core.auth import (
@@ -53,6 +53,13 @@ class TenantCreateRequest(BaseModel):
     appointment_duration: Optional[int] = 30
     booking_settings: Optional[str] = "{}"
     status: Optional[str] = "ACTIVE"
+    whatsapp_phone_number: Optional[str] = ""
+    whatsapp_phone_number_id: Optional[str] = ""
+    whatsapp_waba_id: Optional[str] = ""
+    subscription_plan: Optional[str] = "STARTER"
+    subscription_status: Optional[str] = "ACTIVE"
+    subscription_expires_at: Optional[str] = None
+    feature_flags: Optional[Dict[str, bool]] = None
 
 
 class TenantUpdateRequest(BaseModel):
@@ -70,6 +77,23 @@ class TenantUpdateRequest(BaseModel):
     appointment_duration: Optional[int] = None
     booking_settings: Optional[str] = None
     status: Optional[str] = None
+    whatsapp_phone_number: Optional[str] = None
+    whatsapp_phone_number_id: Optional[str] = None
+    whatsapp_waba_id: Optional[str] = None
+    subscription_plan: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_expires_at: Optional[str] = None
+    feature_flags: Optional[Dict[str, bool]] = None
+
+
+class TenantFeaturesUpdateRequest(BaseModel):
+    feature_flags: Dict[str, bool]
+
+
+class TenantSubscriptionUpdateRequest(BaseModel):
+    subscription_plan: str
+    subscription_status: Optional[str] = "ACTIVE"
+    subscription_expires_at: Optional[str] = None
 
 
 class TenantSuspendRequest(BaseModel):
@@ -81,6 +105,7 @@ class TenantAdminCreateRequest(BaseModel):
     password: str = Field(..., min_length=8)
     full_name: Optional[str] = ""
     email: Optional[str] = ""
+
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +290,117 @@ def create_super_admin_router(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
 
     # -----------------------------------------------------------------------
+    # TENANT FEATURE FLAGS & SUBSCRIPTION MANAGEMENT
+    # -----------------------------------------------------------------------
+    @router.get("/tenants/{tenant_id}/features")
+    async def get_tenant_features(
+        tenant_id: str,
+        current_admin: dict = Depends(require_super_admin),
+    ) -> Dict[str, Any]:
+        """Retrieve effective feature toggles and subscription plan for a tenant."""
+        tenant = service.get_tenant(tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Tenant '{tenant_id}' not found.")
+        flags = service.get_tenant_feature_flags(tenant_id)
+        return {
+            "tenant_id": tenant_id,
+            "subscription_plan": tenant.get("subscription_plan", "STARTER"),
+            "subscription_status": tenant.get("subscription_status", "ACTIVE"),
+            "feature_flags": flags,
+        }
+
+    @router.patch("/tenants/{tenant_id}/features")
+    async def update_tenant_features(
+        tenant_id: str,
+        payload: TenantFeaturesUpdateRequest,
+        current_admin: dict = Depends(require_super_admin),
+    ) -> Dict[str, Any]:
+        """Update granular feature flag toggles for a tenant."""
+        try:
+            return service.update_tenant_feature_flags(
+                tenant_id,
+                payload.feature_flags,
+                admin_user=current_admin["username"],
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err))
+
+    @router.patch("/tenants/{tenant_id}/subscription")
+    async def update_tenant_subscription(
+        tenant_id: str,
+        payload: TenantSubscriptionUpdateRequest,
+        current_admin: dict = Depends(require_super_admin),
+    ) -> Dict[str, Any]:
+        """Update subscription plan and status for a tenant."""
+        try:
+            return service.update_tenant_subscription(
+                tenant_id,
+                plan=payload.subscription_plan,
+                status=payload.subscription_status or "ACTIVE",
+                expires_at=payload.subscription_expires_at,
+                admin_user=current_admin["username"],
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err))
+
+    # -----------------------------------------------------------------------
+    # TENANT RAG KNOWLEDGE BASE DOCUMENTS
+    # -----------------------------------------------------------------------
+    @router.get("/tenants/{tenant_id}/documents")
+    async def list_tenant_documents(
+        tenant_id: str,
+        current_admin: dict = Depends(require_super_admin),
+    ) -> List[Dict[str, Any]]:
+        """List all indexed knowledge documents for a tenant."""
+        try:
+            return service.list_tenant_documents(tenant_id)
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err))
+
+    @router.post("/tenants/{tenant_id}/documents", status_code=status.HTTP_201_CREATED)
+    async def upload_tenant_document(
+        tenant_id: str,
+        file: UploadFile = File(...),
+        current_admin: dict = Depends(require_super_admin),
+    ) -> Dict[str, Any]:
+        """Upload and index a PDF, TXT, or MD document into tenant's isolated knowledge base."""
+        try:
+            content = await file.read()
+            if not content:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
+            return service.upload_tenant_document(
+                tenant_id=tenant_id,
+                filename=file.filename or "uploaded_doc.pdf",
+                content=content,
+                admin_user=current_admin["username"],
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+        except RuntimeError as err:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(err))
+
+    @router.delete("/tenants/{tenant_id}/documents/{filename}")
+    async def delete_tenant_document(
+        tenant_id: str,
+        filename: str,
+        current_admin: dict = Depends(require_super_admin),
+    ) -> Dict[str, Any]:
+        """Delete a document from a tenant's knowledge base and re-index."""
+        try:
+            return service.delete_tenant_document(
+                tenant_id=tenant_id,
+                filename=filename,
+                admin_user=current_admin["username"],
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err))
+        except RuntimeError as err:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(err))
+
+    # -----------------------------------------------------------------------
     # PLATFORM AUDIT
     # -----------------------------------------------------------------------
+
     @router.get("/audit-logs")
     async def get_audit_logs(
         limit: int = Query(50, ge=1, le=200),
