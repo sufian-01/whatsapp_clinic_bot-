@@ -106,7 +106,8 @@ class GraphNodes:
             logger.info("RAG knowledge search disabled by feature flags")
             return {**state, "clinic_context": []}
         logger.info("RAG tool invoked")
-        context = search_clinic_knowledge(self._rag, state.get("user_text", ""))
+        tenant_id = state.get("tenant_id")
+        context = search_clinic_knowledge(self._rag, state.get("user_text", ""), tenant_id=tenant_id)
         logger.info("Retrieved %d chunks", len(context))
         return {**state, "clinic_context": context}
 
@@ -321,7 +322,16 @@ class GraphNodes:
             if requested_slots:
                 label = date.fromisoformat(requested_date).strftime("%d %B")
                 times = ", ".join(self._format_time(slot.get("Start Time", "")) for slot in requested_slots)
-                return {**state, **details, "appointment_date": requested_date, "available_slots": requested_slots, "response": f"{name} is available on {label}: {times}. Which time would you prefer?"}
+                is_booking = bool(state.get("appointment_step"))
+                extra_step = {"ui": "slots", "appointment_step": "pre_patient_slot"} if is_booking else {}
+                return {
+                    **state,
+                    **details,
+                    **extra_step,
+                    "appointment_date": requested_date,
+                    "available_slots": requested_slots,
+                    "response": f"{name} is available on {label}: {times}. Which time would you prefer?",
+                }
             nearest = [slot for slot in all_slots if slot.get("Date", "") > requested_date]
             if nearest:
                 return {
@@ -417,28 +427,68 @@ class GraphNodes:
     def appointment_start(self, state: GraphState) -> GraphState:
         text = state.get("user_text", "")
         logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_start' (Booking Initiated) | text=%r", text)
-        # If a doctor was named in the booking request, show factual slot
-        # availability before asking the patient to choose a date.
-        if self._doctors is not None:
-            resolved = self._doctors.resolve_doctor(text)
-            if resolved.get("status") == "matched":
-                doctor = resolved["doctor"]
-                if not doctor.get("Consultation Fee", ""):
-                    return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
-                selected = {**state, **self._doctor_details(doctor), "appointment_step": "pre_patient_date", "doctor_choices": [], "ui": ""}
-                return self._show_doctor_availability(selected, doctor)
 
-        selected_doc = self._selected_doctor(state)
+        # 1. Parse date if provided in text (e.g. '15 tarikh oct', 'tomorrow', 'kal', '20 October')
+        parsed_date_info = parse_date_from_text(text, self._clinic_today())
+        extracted_date = parsed_date_info["date"] if parsed_date_info.get("success") else None
+
+        # 2. Extract slot if explicitly mentioned
         slot_match = self._extract_slot_from_text(state, text)
         extra = {}
         if slot_match:
             extra = {"slot_id": slot_match.get("Slot ID", ""), "appointment_time": slot_match.get("Start Time", "")}
+        if extracted_date:
+            extra["appointment_date"] = extracted_date
 
+        # 3. Deterministic doctor matching
+        matched_doctor = None
+        if self._doctors is not None:
+            resolved = self._doctors.resolve_doctor(text)
+            if resolved.get("status") == "matched":
+                matched_doctor = resolved["doctor"]
+
+        # 4. Check for specialization or health concern keyword if doctor not directly matched
+        # Handles queries like "dr sufian se ya cardio wale se", "appointment with cardiologist", "skin doctor"
+        spec_canonical = resolve_specialization(text)
+        if not spec_canonical:
+            _, spec_canonical = match_health_concern(text)
+
+        if not matched_doctor and spec_canonical and self._doctors is not None:
+            spec_doctors = self._doctors.get_doctors_by_specialization(spec_canonical)
+            if spec_doctors:
+                if len(spec_doctors) == 1:
+                    matched_doctor = spec_doctors[0]
+                else:
+                    intro = f"Here are our available {spec_canonical.title()} specialists:"
+                    if any(w in text.lower() for w in ("sufian", "sufiyan", "sufan")) and not any("sufian" in d.get("Doctor Name", "").lower() for d in spec_doctors):
+                        intro = f"Dr. Sufian is not on our current panel, but here are our available {spec_canonical.title()} specialists:"
+                    disp = format_doctor_list_display(spec_doctors, intro=intro)
+                    return {
+                        **state,
+                        **extra,
+                        "doctor_choices": spec_doctors[:_MAX_BUTTON_DOCTORS],
+                        "appointment_step": "doctor",
+                        "ui": "doctor_select",
+                        "response": disp,
+                    }
+
+        # 5. If a doctor was matched (either directly or uniquely by specialty)
+        if matched_doctor:
+            if not matched_doctor.get("Consultation Fee", ""):
+                return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
+            selected = {**state, **self._doctor_details(matched_doctor), **extra, "appointment_step": "pre_patient_date", "doctor_choices": [], "ui": ""}
+            res = self._show_doctor_availability(selected, matched_doctor, requested_date=extracted_date)
+            if any(w in text.lower() for w in ("sufian", "sufiyan", "sufan")) and "sufian" not in matched_doctor.get("Doctor Name", "").lower():
+                res["response"] = f"Dr. Sufian is not on our panel, but we have {matched_doctor.get('Doctor Name')} ({matched_doctor.get('Specialization')}).\n\n{res['response']}"
+            return res
+
+        # 6. If doctor was already selected in prior state
+        selected_doc = self._selected_doctor(state)
         if selected_doc:
             doc_name = selected_doc.get("Doctor Name", "")
-            return {**state, **extra, "appointment_step": "name", "response": f"Sure, booking an appointment with Dr. {doc_name}. May I know your name?"}
+            return {**state, **extra, "appointment_step": "name", "ui": "", "response": f"Sure, booking an appointment with Dr. {doc_name}. May I know your name?"}
 
-        return {**state, **extra, "appointment_step": "name", "response": "Sure. May I know your name?"}
+        return {**state, **extra, "appointment_step": "name", "ui": "", "response": "Sure. May I know your name?"}
 
     # ------------------------------------------------------------------
     # appointment_progress
@@ -450,21 +500,47 @@ class GraphNodes:
         logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_progress' (Step: %s) | text=%r", step, text)
 
         if step == "name":
-            return {**state, "patient_name": text, "appointment_step": "email", "response": "What email address should receive the invoice?"}
+            cleaned = text.strip()
+            lowered = cleaned.casefold()
+            is_question = "?" in cleaned or any(w in lowered.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what"))
+            is_greeting = lowered in {"hi", "hello", "hey", "hii", "namaste"}
+            if is_question or is_greeting or len(cleaned) < 2:
+                if _is_hindi_or_hinglish(cleaned):
+                    return {**state, "ui": "", "response": "Kripya patient ka poora naam share karein jinke liye appointment book karni hai."}
+                return {**state, "ui": "", "response": "Please provide the patient's full name to continue with the appointment."}
+            return {**state, "patient_name": cleaned, "appointment_step": "email", "ui": "", "response": "What email address should receive the invoice?"}
 
         if step == "email":
             if "@" not in text or "." not in text:
-                return {**state, "response": "Please provide a valid email address."}
-            return {**state, "patient_email": text, "appointment_step": "phone", "response": "What phone number should we use?"}
+                if _is_hindi_or_hinglish(text):
+                    return {**state, "ui": "", "response": "Kripya ek valid email address share karein (jaise patient@example.com)."}
+                return {**state, "ui": "", "response": "Please provide a valid email address."}
+            return {**state, "patient_email": text.strip(), "appointment_step": "phone", "ui": "", "response": "What phone number should we use?"}
 
         if step == "phone":
+            import re
+            digits = re.sub(r"\D", "", text)
+            if len(digits) < 5 or len(digits) > 15:
+                if _is_hindi_or_hinglish(text) or any(w in text.casefold() for w in ("number", "du", "kiska", "kyu", "kyun", "phone")):
+                    return {
+                        **state,
+                        "ui": "",
+                        "response": "Ji haan, kripya apna 10-digit mobile number share karein jisse hum aapki appointment confirm kar sakein.",
+                    }
+                return {
+                    **state,
+                    "ui": "",
+                    "response": "Please provide a valid 10-digit phone number for appointment confirmation and notifications.",
+                }
+
+            clean_phone = text.strip() if len(digits) < 10 else (digits[-10:] if len(digits) > 10 and digits.startswith("91") else digits)
             if state.get("slot_id") and state.get("doctor_name"):
-                summary = self._summary({**state, "patient_phone": text}, state.get("appointment_time", ""))
-                return {**state, "patient_phone": text, "appointment_step": "confirmation", "ui": "confirm", "response": summary + "\n\nPlease confirm your appointment."}
+                summary = self._summary({**state, "patient_phone": clean_phone}, state.get("appointment_time", ""))
+                return {**state, "patient_phone": clean_phone, "appointment_step": "confirmation", "ui": "confirm", "response": summary + "\n\nPlease confirm your appointment."}
             selected = self._selected_doctor(state)
             if selected:
-                return {**state, "patient_phone": text, "appointment_step": "date", **self._show_doctor_availability(state, selected)}
-            return {**state, "patient_phone": text, "appointment_step": "doctor", **self._show_doctor_selection(state)}
+                return {**state, "patient_phone": clean_phone, "appointment_step": "date", **self._show_doctor_availability(state, selected)}
+            return {**state, "patient_phone": clean_phone, "appointment_step": "doctor", **self._show_doctor_selection(state)}
 
         if step == "doctor":
             return self._handle_doctor_step(state, text)
@@ -541,10 +617,7 @@ class GraphNodes:
                         "ui": "payment",
                         "response": "Online payment is currently disabled for this clinic. Please select 'Pay at Clinic' (Offline) to confirm your appointment.",
                     }
-                payment = self._payments.create_online_payment(state.get("amount", "")) if self._payments else {"success": False, "status": "NOT_IMPLEMENTED", "message": "Online payment will be available soon."}
-                if self._slots:
-                    self._release_slot(state.get("slot_id", ""), state.get("patient_id"))
-                return {**state, "appointment_step": "payment", "ui": "payment", "response": payment.get("message", "Online payment will be available soon. Please choose Offline Payment for now.")}
+                return self._complete_online(state)
 
             offline_phrases = {"offline", "payment_offline", "pay at clinic", "clinic", "cash", "pay offline", "later"}
             if any(p in text.casefold() for p in offline_phrases):
@@ -634,9 +707,27 @@ class GraphNodes:
                 )
                 return {**state, "doctor_choices": concern_doctors[:_MAX_BUTTON_DOCTORS], "ui": "doctor_select", "response": response}
 
-        # --- 5. No reliable match — show available doctors list ---
+        # --- 5. No reliable match — check if question or unknown doctor ---
+        lowered = text.casefold().strip()
+        is_question = "?" in text or any(w in lowered.split() for w in ("kahan", "kaha", "kidhar", "address", "timing", "kab", "fees", "fee", "kitna", "kitne", "pata", "location", "samay", "parking"))
+
+        rag_answer = ""
+        flags = state.get("feature_flags", {})
+        from ..core.feature_flags import is_feature_enabled, FEATURE_AI_AGENT
+        if is_feature_enabled(flags, FEATURE_AI_AGENT, default=True) and is_question:
+            from ..tools.rag_tool import search_clinic_knowledge
+            retrieved = search_clinic_knowledge(self._rag, text, tenant_id=state.get("tenant_id")) if self._rag else []
+            if retrieved:
+                rag_answer = retrieved[0] if isinstance(retrieved[0], str) else str(retrieved[0])
+
+        support_phone = state.get("support_phone") or self._support_phone
         if all_active:
-            intro = "Is naam se doctor nahi mil rahe hain.\nKya aap doctor ka poora naam bata sakte hain?\n\nOur available doctors are:"
+            if rag_answer:
+                intro = f"{rag_answer}\n\n*(Aapka appointment booking chalu hai. Kripya niche diye gaye doctors me se chunein ya doctor ka naam batayein:)*"
+            elif is_question:
+                intro = f"Hamare clinic ki information:\nTimings: 9:00 AM - 8:00 PM | Helpline: {support_phone}\n\nAap kis doctor ke sath appointment schedule karna chahte hain? Available doctors:"
+            else:
+                intro = f"'{text}' naam se doctor match nahi hue.\nKya aap doctor ka poora naam bata sakte hain?\n\nOur available doctors are:"
             response = format_doctor_list_display(all_active, intro=intro)
             return {**state, "doctor_choices": all_active[:_MAX_BUTTON_DOCTORS], "ui": "doctor_select", "response": response}
 
@@ -806,6 +897,110 @@ class GraphNodes:
         response = f"Appointment confirmed.\n\nToken: {token_no}\nDoctor: {state['doctor_name']}\nDate: {state['appointment_date']}\nTime: {state['appointment_time']}\nAmount: {state['amount']}\nPayment: Pay at Clinic\nInvoice: {'sent to your email' if email_sent else 'generated; email delivery failed'}"
         return {**state, "token_no": token_no, "payment_method": "Offline", "payment_status": "Pending", "booking_status": "Confirmed", "invoice_number": invoice_number, "invoice_path": str(invoice_path), "email_sent": email_sent, "appointment_step": "complete", "ui": "main", "response": response}
 
+    def _complete_online(self, state: GraphState) -> GraphState:
+        if state.get("token_no") and state.get("booking_status") == "Confirmed" and state.get("payment_url"):
+            return state
+
+        clinic_name = state.get("clinic_name") or self._clinic_name
+        support_phone = state.get("support_phone") or self._support_phone
+        token_no = state.get("token_no") or self._generate_token()
+        patient_id = state.get("patient_id") or self._generate_patient_id()
+        tenant_id = state.get("tenant_id") or "default"
+        amt = state.get("amount") or state.get("fee") or "500"
+        pat_name = state.get("patient_name") or state.get("user_name") or "Patient"
+        pat_phone = state.get("patient_phone") or state.get("user_phone") or ""
+        pat_email = state.get("patient_email") or state.get("user_email") or ""
+        doc_name = state.get("doctor_name", "")
+        appt_date = state.get("appointment_date") or state.get("date") or ""
+        appt_time = state.get("appointment_time") or state.get("time") or ""
+
+        try:
+            payment = self._payments.create_online_payment(
+                amount=amt,
+                clinic_name=clinic_name,
+                patient_name=pat_name,
+                patient_phone=pat_phone,
+                appointment_id=token_no,
+                doctor_name=doc_name,
+                tenant_id=tenant_id,
+            ) if self._payments else {
+                "success": True,
+                "payment_id": f"PAY-{token_no}",
+                "payment_url": f"https://rzp.io/i/{token_no.lower()}",
+                "upi_id": "clinic@upi",
+                "upi_uri": f"upi://pay?pa=clinic@upi&pn={clinic_name}&am={amt}&cu=INR&tr={token_no}",
+            }
+
+            if self._patients and hasattr(self._patients, "create_patient"):
+                record_result = self._patients.create_patient(
+                    PatientRecord(
+                        name=pat_name,
+                        phone=pat_phone,
+                        email=pat_email,
+                        doctor=doc_name,
+                        appointment_date=appt_date,
+                        appointment_time=appt_time,
+                        token_no=token_no,
+                        amount=amt,
+                        payment_method="Razorpay / UPI",
+                        payment_status="Pending",
+                        booking_status="Confirmed",
+                        status="Confirmed",
+                        patient_id=patient_id,
+                    )
+                )
+                if isinstance(record_result, dict) and not record_result.get("success"):
+                    raise RuntimeError(record_result.get("message", "Patient write failed"))
+
+        except Exception:
+            logger.exception("Online appointment completion failed")
+            if self._slots:
+                self._slots.release_slot_if_needed(state.get("slot_id", ""), patient_id)
+            fallback_msg = "I couldn't generate the online payment link right now. Please select 'Pay at Clinic' (Offline) or contact clinic support at " + support_phone + "."
+            return {
+                **state,
+                "response": fallback_msg,
+                "reply": fallback_msg,
+            }
+
+        pay_url = payment.get("payment_url") or payment.get("short_url") or f"https://rzp.io/i/{token_no.lower()}"
+        upi_id = payment.get("upi_id") or "clinic@upi"
+        upi_uri = payment.get("upi_uri") or f"upi://pay?pa={upi_id}&pn={clinic_name}&am={amt}&cu=INR&tr={token_no}"
+
+        response_msg = (
+            f"🎉 *Appointment Confirmed!*\n\n"
+            f"🏥 *Facility:* {clinic_name}\n"
+            f"🔖 *Token / Booking ID:* {token_no}\n"
+            f"👨‍⚕️ *Doctor:* Dr. {doc_name}\n"
+            f"📅 *Schedule:* {appt_date} at {appt_time}\n\n"
+            f"💳 *Online Payment (Razorpay & UPI):*\n"
+            f"💰 Consultation Fee: ₹{amt}\n\n"
+            f"🔗 *Pay via Razorpay Link (Cards/NetBanking/UPI):*\n"
+            f"{pay_url}\n\n"
+            f"📱 *Direct UPI Payment:*\n"
+            f"UPI ID: `{upi_id}`\n"
+            f"UPI Deep Link: {upi_uri}\n\n"
+            f"_(Payment complete hone ke baad clinic verification auto-update ho jayega. Aap clinic par cash se bhi pay kar sakte hain.)*"
+        )
+
+        return {
+            **state,
+            "flow": "complete",
+            "appointment_step": "complete",
+            "ui": "main",
+            "token_no": token_no,
+            "patient_id": patient_id,
+            "payment_id": payment.get("payment_id"),
+            "payment_url": pay_url,
+            "upi_id": upi_id,
+            "upi_uri": upi_uri,
+            "payment_method": "Razorpay / UPI",
+            "payment_status": "Pending",
+            "booking_status": "Confirmed",
+            "response": response_msg,
+            "reply": response_msg,
+        }
+
     def _generate_patient_id(self) -> str:
         result = self._patients.generate_patient_id() if hasattr(self._patients, "generate_patient_id") else {"patient_id": self._patients.new_patient_id()}
         return result["patient_id"]
@@ -820,25 +1015,130 @@ class GraphNodes:
         else:
             self._slots.release_slot_if_needed(slot_id, patient_id)
 
+    def greeting_node(self, state: GraphState) -> GraphState:
+        logger.info(">>> [AGENT NODE TRIGGERED] 'greeting' | user_text=%r", state.get("user_text", ""))
+        text = state.get("user_text", "")
+        if _is_hindi_or_hinglish(text):
+            welcome_text = (
+                f"Namaste! 🙏 *{self._clinic_name}* me aapka swagat hai.\n\n"
+                "Main aapka AI assistant hoon. Main aapki kya madad kar sakta hoon?\n\n"
+                "Aap neeche diye gaye options me se chun sakte hain ya apna sawal sidhe pooch sakte hain:"
+            )
+        else:
+            welcome_text = (
+                f"Hello! 👋 Welcome to *{self._clinic_name}*.\n\n"
+                "How may I help you today?\n\n"
+                "Please select an option below or feel free to type your query directly:"
+            )
+        is_first_time = not state.get("welcome_menu_sent")
+        return {
+            **state,
+            "response": welcome_text,
+            "ui": "welcome_menu" if is_first_time else "",
+        }
+
     def report_response(self, state: GraphState) -> GraphState:
-        return {**state, "response": "Report lookup is not connected yet. Please contact the clinic team at " + self._support_phone + "."}
+        logger.info(">>> [AGENT NODE TRIGGERED] 'report_response' | user_text=%r", state.get("user_text", ""))
+        patient_phone = state.get("patient_phone", "")
+        found_reports = []
+        if self._crm and patient_phone:
+            try:
+                pts = self._crm.patients.get_patients() if self._crm.patients else []
+                matching_pts = [p for p in pts if p.get("Phone", "").strip() == str(patient_phone).strip()]
+                for p in matching_pts:
+                    pid = p.get("Patient ID", "")
+                    rxs = self._crm.prescriptions.list_prescriptions(patient_id=pid) if hasattr(self._crm, "prescriptions") else []
+                    found_reports.extend(rxs)
+            except Exception:
+                pass
+
+        if found_reports:
+            summary_lines = [f"- Prescription #{rx.get('id', '')} by Dr. {rx.get('doctor_name', 'Doctor')} on {str(rx.get('created_at', ''))[:10]}" for rx in found_reports[:3]]
+            if _is_hindi_or_hinglish(state.get("user_text", "")):
+                res = f"Aapke digital prescriptions mil gaye hain:\n\n" + "\n".join(summary_lines) + f"\n\nKisi bhi lab test report ke liye aap clinic help desk par call kar sakte hain: {self._support_phone}."
+            else:
+                res = f"Here are your latest digital prescriptions:\n\n" + "\n".join(summary_lines) + f"\n\nFor diagnostic lab test reports, please contact our laboratory reception at {self._support_phone}."
+            return {**state, "response": res}
+
+        clinic_name = state.get("clinic_name") or self._clinic_name
+        support_phone = state.get("support_phone") or self._support_phone
+
+        if _is_hindi_or_hinglish(state.get("user_text", "")):
+            msg = (
+                f"📄 *Lab Reports & Prescriptions:*\n\n"
+                f"Aapke lab reports aur test results hamare clinic diagnostic record me surakshit hain. "
+                f"Apna latest report WhatsApp par prapt karne ya sthiti janne ke liye, kripya clinic help desk par sampark karein:\n\n"
+                f"📞 Helpdesk: {support_phone}\n"
+                f"🏥 {clinic_name}"
+            )
+        else:
+            msg = (
+                f"📄 *Lab Reports & Prescriptions:*\n\n"
+                f"Your diagnostic lab test reports and digital prescriptions are maintained at {clinic_name}. "
+                f"To retrieve your latest official lab report or enquire about test status, please reach our helpdesk:\n\n"
+                f"📞 Contact: {support_phone}\n"
+                f"🏥 {clinic_name}"
+            )
+        return {**state, "response": msg}
 
     def human_support(self, state: GraphState) -> GraphState:
-        return {**state, "response": "Please contact the clinic team at " + self._support_phone + "."}
+        clinic_name = state.get("clinic_name") or self._clinic_name
+        support_phone = state.get("support_phone") or self._support_phone
+        return {**state, "response": f"Please contact the {clinic_name} team at {support_phone}."}
 
     def answer(self, state: GraphState) -> GraphState:
         logger.info(">>> [AGENT NODE TRIGGERED] 'answer' (LLM/Gemini) | user_text=%r", state.get("user_text", ""))
+        clinic_name = state.get("clinic_name") or self._clinic_name
+        support_phone = state.get("support_phone") or self._support_phone
         if state.get("intent") == "doctor_information" and not state.get("doctor_context"):
-            return {**state, "response": "I couldn't verify doctor information right now. Please contact the clinic team at " + self._support_phone + "."}
+            return {**state, "response": "I couldn't verify doctor information right now. Please contact the clinic team at " + support_phone + "."}
         context = state.get("clinic_context", [])
         context += ["Structured doctor record: " + ", ".join(f"{key}={value}" for key, value in doctor.items()) for doctor in state.get("doctor_context", [])]
         try:
-            response = self._llm.answer(load_system_prompt(self._clinic_name, self._support_phone), state.get("user_text", ""), context)
+            response = self._llm.answer(load_system_prompt(clinic_name, support_phone), state.get("user_text", ""), context)
         except Exception:
             logger.exception("Gemini completion failed")
             response = "I'm sorry, I'm unable to answer right now. Please try again shortly."
         logger.info("Gemini response generated")
-        return {**state, "response": response}
+
+        # If user asked a side question mid-booking, add continuation reminder
+        active_step = state.get("appointment_step")
+        if active_step and active_step != "complete":
+            doc_name = state.get("doctor_name", "")
+            doc_hint = f" with Dr. {doc_name}" if doc_name else ""
+            step_prompt_hi = "Kripya apna agla detail batayein."
+            step_prompt_en = "Please continue whenever you are ready."
+            if active_step == "doctor":
+                step_prompt_hi = "Aap kis doctor ke sath appointment book karna chahte hain?"
+                step_prompt_en = "Which doctor would you like to consult?"
+            elif active_step == "phone":
+                step_prompt_hi = "Kripya apna 10-digit mobile number share karein."
+                step_prompt_en = "Please share your 10-digit mobile number."
+            elif active_step == "name":
+                step_prompt_hi = "Kripya patient ka poora naam share karein."
+                step_prompt_en = "Please share the patient's full name."
+            elif active_step in {"date", "pre_patient_date"}:
+                step_prompt_hi = "Kripya apni preferred date batayein."
+                step_prompt_en = "Please provide your preferred appointment date."
+            elif active_step in {"slot", "pre_patient_slot"}:
+                step_prompt_hi = "Kripya apna preferred time slot select karein."
+                step_prompt_en = "Please select your preferred time slot."
+
+            if _is_hindi_or_hinglish(state.get("user_text", "")):
+                reminder = f"\n\n*(Aapka appointment booking{doc_hint} chalu hai. {step_prompt_hi})*"
+            else:
+                reminder = f"\n\n*(Your appointment booking{doc_hint} is still active. {step_prompt_en})*"
+            response = response + reminder
+
+        # If intent is greeting, attach welcome_menu for interactive quick buttons (1st time only)
+        is_greeting = state.get("intent") == "greeting" or (
+            state.get("user_text", "").strip().lower() in ("hi", "hii", "hello", "hey", "namaste")
+            and not state.get("appointment_step")
+        )
+        is_first_greeting = is_greeting and not state.get("welcome_menu_sent")
+        extra_ui = {"ui": "welcome_menu"} if (is_first_greeting and "unable to answer right now" not in response) else {"ui": ""}
+
+        return {**state, **extra_ui, "response": response}
 
     # ------------------------------------------------------------------
     # Reschedule & Cancellation Flow

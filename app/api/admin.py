@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -14,6 +14,7 @@ from ..core.auth import (
     clear_failed_login,
     create_session,
     get_current_admin,
+    get_current_admin_or_doctor,
     get_current_doctor,
     get_current_user,
     hash_password,
@@ -40,6 +41,7 @@ class LoginResponse(BaseModel):
     username: str
     role: str
     clinic_name: str
+    clinic_logo: Optional[str] = None
     doctor_id: Optional[str] = None
     doctor_name: Optional[str] = None
     must_change_password: bool = False
@@ -176,9 +178,45 @@ class PaymentRecordRequest(BaseModel):
     notes: Optional[str] = ""
 
 
+class ClinicSettingsUpdateRequest(BaseModel):
+    clinic_name: Optional[str] = None
+    support_phone: Optional[str] = None
+    clinic_address: Optional[str] = None
+    logo: Optional[str] = None
+    razorpay_key_id: Optional[str] = None
+    razorpay_key_secret: Optional[str] = None
+    upi_id: Optional[str] = None
+
+
+class RazorpayVerifyRequest(BaseModel):
+    payment_id: str
+    razorpay_payment_id: str
+    razorpay_order_id: Optional[str] = ""
+    razorpay_signature: Optional[str] = ""
+
+
 # ---------------------------------------------------------------------------
 # Router Factory
 # ---------------------------------------------------------------------------
+
+def _resolve_login_branding(crm_instance, fallback_name: str) -> tuple[str, Optional[str]]:
+    """Safely resolve tenant clinic name and logo for login responses without failing on mock/non-dict returns."""
+    c_name = str(fallback_name) if (fallback_name and isinstance(fallback_name, str)) else "Clinic"
+    c_logo = None
+    if hasattr(crm_instance, "get_clinic_settings"):
+        try:
+            clinic_info = crm_instance.get_clinic_settings()
+            if isinstance(clinic_info, dict):
+                found_name = clinic_info.get("clinic_name") or clinic_info.get("name")
+                if isinstance(found_name, str) and found_name.strip():
+                    c_name = found_name.strip()
+                found_logo = clinic_info.get("logo")
+                if isinstance(found_logo, str) and found_logo.strip():
+                    c_logo = found_logo.strip()
+        except Exception:
+            pass
+    return c_name, c_logo
+
 
 def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
     router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -256,11 +294,13 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
                 samesite="lax",
                 max_age=settings.crm_token_expire_hours * 3600,
             )
+            c_name, c_logo = _resolve_login_branding(crm, settings.clinic_name)
             return LoginResponse(
                 token=token,
                 username=expected_user,
                 role="admin",
-                clinic_name=settings.clinic_name,
+                clinic_name=c_name,
+                clinic_logo=c_logo,
                 doctor_id=None,
                 doctor_name=None,
                 must_change_password=False,
@@ -286,11 +326,13 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
                     samesite="lax",
                     max_age=settings.crm_token_expire_hours * 3600,
                 )
+                c_name, c_logo = _resolve_login_branding(crm, settings.clinic_name)
                 return LoginResponse(
                     token=token,
                     username=doc_account["username"],
                     role="doctor",
-                    clinic_name=settings.clinic_name,
+                    clinic_name=c_name,
+                    clinic_logo=c_logo,
                     doctor_id=doc_account.get("doctor_id"),
                     doctor_name=doc_account.get("doctor_name"),
                     must_change_password=doc_account.get("must_change_password", False),
@@ -939,6 +981,72 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to record payment: {err}")
 
+    @router.post("/payments/razorpay/verify")
+    async def verify_razorpay_payment(
+        payload: RazorpayVerifyRequest,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Verify Razorpay payment status and mark appointment as Paid."""
+        try:
+            return crm.verify_online_payment(
+                payment_id=payload.payment_id,
+                razorpay_payment_id=payload.razorpay_payment_id,
+                razorpay_order_id=payload.razorpay_order_id or "",
+                razorpay_signature=payload.razorpay_signature or "",
+                admin_user=current_admin.get("username", "admin"),
+            )
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to verify payment: {err}")
+
+    @router.post("/payments/razorpay/webhook")
+    async def razorpay_webhook(
+        request: Request,
+    ):
+        """Webhook listener for Razorpay payment notifications."""
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        event = data.get("event", "")
+        payload_entity = (
+            data.get("payload", {}).get("payment", {}).get("entity", {})
+            or data.get("payload", {}).get("payment_link", {}).get("entity", {})
+        )
+
+        payment_id = (
+            payload_entity.get("notes", {}).get("payment_id")
+            or payload_entity.get("notes", {}).get("appointment_id")
+            or payload_entity.get("id")
+        )
+        rzp_pay_id = payload_entity.get("id", "webhook_captured")
+
+        if payment_id and event in ("payment.captured", "payment_link.paid", "order.paid"):
+            crm.verify_online_payment(
+                payment_id=str(payment_id),
+                razorpay_payment_id=str(rzp_pay_id),
+                admin_user="razorpay_webhook",
+            )
+        return {"status": "ok", "received_event": event}
+
+    @router.post("/payments/{payment_id}/simulate-razorpay-success")
+    async def simulate_razorpay_success(
+        payment_id: str,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Sandbox helper: Simulate successful Razorpay payment capture."""
+        import uuid
+        mock_tx_id = f"pay_sim_{uuid.uuid4().hex[:12]}"
+        try:
+            res = crm.verify_online_payment(
+                payment_id=payment_id,
+                razorpay_payment_id=mock_tx_id,
+                admin_user=current_admin.get("username", "admin"),
+            )
+            return res
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to simulate payment: {err}")
+
     # -----------------------------------------------------------------------
     # REPORTS & EXPORTS
     # -----------------------------------------------------------------------
@@ -1181,6 +1289,32 @@ def create_admin_router(crm: CrmService, settings: Settings) -> APIRouter:
             )
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to generate prescription PDF: {err}")
+
+    # -----------------------------------------------------------------------
+    # CLINIC SETTINGS & BRANDING
+    # -----------------------------------------------------------------------
+
+    @router.get("/settings")
+    async def get_clinic_settings(
+        current_user: dict = Depends(get_current_admin_or_doctor),
+    ):
+        """Fetch clinic facility profile, logo, address, and payment credentials."""
+        try:
+            return crm.get_clinic_settings()
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch clinic settings: {err}")
+
+    @router.put("/settings")
+    async def update_clinic_settings(
+        payload: ClinicSettingsUpdateRequest,
+        current_admin: dict = Depends(get_current_admin),
+    ):
+        """Update clinic facility profile, logo, address, and payment credentials."""
+        try:
+            updates = payload.model_dump(exclude_unset=True)
+            return crm.update_clinic_settings(updates, admin_user=current_admin.get("username", "admin"))
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to update clinic settings: {err}")
 
     # Include doctor router under /api/admin/doctor as well
     doctor_router = create_doctor_router(crm, settings)

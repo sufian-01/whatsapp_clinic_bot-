@@ -8,9 +8,10 @@ Provides dedicated clinical workflow endpoints:
 - PDF download & email delivery to patients
 """
 
+import logging
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
@@ -19,6 +20,8 @@ from pydantic import BaseModel, Field
 from ..core.auth import get_current_doctor
 from ..core.config import Settings
 from ..services.crm_service import CrmService
+
+logger = logging.getLogger(__name__)
 
 
 class DoctorSlotCreateRequest(BaseModel):
@@ -82,7 +85,36 @@ class PrescriptionEmailRequest(BaseModel):
     recipient_type: Optional[str] = "patient"
 
 
-def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
+class DoctorProfileUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    specialization: Optional[str] = None
+    qualification: Optional[str] = None
+    registration_no: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    bio: Optional[str] = None
+    photo: Optional[str] = None
+    signature: Optional[str] = None
+
+
+def create_doctor_router(
+    crm: CrmService,
+    settings: Settings,
+    whatsapp_client: Optional[Any] = None,
+) -> APIRouter:
+    if whatsapp_client is None and getattr(settings, "whatsapp_access_token", None):
+        try:
+            from ..channels.whatsapp.client import MetaWhatsAppClient
+            whatsapp_client = MetaWhatsAppClient(
+                access_token=settings.whatsapp_access_token,
+                api_version=settings.whatsapp_api_version,
+                phone_number_id=settings.whatsapp_phone_number_id,
+                default_country_code=settings.whatsapp_default_country_code,
+            )
+        except Exception as client_init_err:
+            logger.warning("Could not auto-initialize WhatsApp client in doctor router: %s", client_init_err)
+            whatsapp_client = None
+
     router = APIRouter(prefix="/api/doctor", tags=["doctor"])
 
     # -----------------------------------------------------------------------
@@ -101,6 +133,38 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
                 "username": current_doctor.get("username"),
             }
         return doc
+
+    @router.put("/profile")
+    async def update_profile(
+        payload: DoctorProfileUpdateRequest,
+        current_doctor: dict = Depends(get_current_doctor),
+    ):
+        """Update the authenticated doctor's profile, photo, and digital signature."""
+        doc_id = current_doctor.get("doctor_id")
+        updates = payload.model_dump(exclude_unset=True)
+        try:
+            res = crm.update_doctor(doc_id, updates, admin_user=current_doctor.get("username", "doctor"))
+            if not res:
+                raise HTTPException(status_code=404, detail="Doctor profile not found.")
+
+            # Invalidate cached prescription PDFs so updated signature, qualification, & reg_no render immediately
+            try:
+                rx_repo = getattr(crm, "prescriptions", None)
+                pdf_dir = getattr(rx_repo, "pdf_dir", None)
+                if pdf_dir and Path(pdf_dir).exists():
+                    for pdf_f in Path(pdf_dir).glob("*.pdf"):
+                        try:
+                            pdf_f.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+            except Exception as cache_err:
+                logger.debug("Non-critical: could not clear pdf cache on doctor profile update: %s", cache_err)
+
+            return res
+        except HTTPException:
+            raise
+        except Exception as err:
+            raise HTTPException(status_code=500, detail=f"Failed to update doctor profile: {err}")
 
     @router.get("/dashboard")
     async def get_dashboard(
@@ -398,11 +462,11 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
         prescription_id: str,
         current_doctor: dict = Depends(get_current_doctor),
     ):
-        """Review and finalize a draft prescription with strict validation."""
+        """Review and finalize a draft prescription with strict validation and WhatsApp dispatch."""
         doc_id = current_doctor.get("doctor_id")
         username = current_doctor.get("username", "doctor")
         try:
-            return crm.prescriptions.finalize_prescription(
+            rx = crm.prescriptions.finalize_prescription(
                 prescription_id=prescription_id,
                 doctor_id=doc_id,
                 user=username,
@@ -413,6 +477,70 @@ def create_doctor_router(crm: CrmService, settings: Settings) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(err))
         except Exception as err:
             raise HTTPException(status_code=500, detail=f"Failed to finalize prescription: {err}")
+
+        # Post-finalization: generate PDF and dispatch to patient's registered WhatsApp number
+        try:
+            clean_id, pdf_path = crm.prescriptions.generate_pdf_for_prescription(prescription_id)
+            patient_phone = (rx.get("patient_phone") or "").strip()
+            if not patient_phone and rx.get("patient_id"):
+                patient_info = crm.get_patient(rx["patient_id"])
+                if patient_info:
+                    patient_phone = (patient_info.get("phone") or "").strip()
+
+            if patient_phone and whatsapp_client:
+                pdf_file = Path(pdf_path)
+                media_id = None
+                if pdf_file.exists() and pdf_file.stat().st_size > 0:
+                    try:
+                        pdf_bytes = pdf_file.read_bytes()
+                        media_id = whatsapp_client.upload_media(
+                            media_bytes=pdf_bytes,
+                            mime_type="application/pdf",
+                            filename=f"Prescription_{clean_id}.pdf",
+                        )
+                    except Exception as upload_err:
+                        logger.warning("WhatsApp media upload failed: %s", upload_err)
+
+                doc_name = rx.get("doctor_name") or current_doctor.get("doctor_name", "Doctor")
+                patient_name = rx.get("patient_name", "Patient")
+                token_no = rx.get("appointment_id", "")
+                clinic_name = getattr(settings, "clinic_name", "XYZ Clinic")
+                diagnosis = rx.get("diagnosis", "")
+                diag_line = f"\nDiagnosis: {diagnosis}" if diagnosis else ""
+                token_line = f"\nAppointment Token: {token_no}" if token_no else ""
+
+                caption = (
+                    f"Dear {patient_name},\n\n"
+                    f"Here is your digital prescription from Dr. {doc_name} at {clinic_name}."
+                    f"{token_line}{diag_line}\n\n"
+                    f"Please follow the advised dosage and care instructions.\n\n"
+                    f"Thanks,\n{clinic_name}"
+                )
+
+                if media_id:
+                    whatsapp_client.send_document(
+                        to=patient_phone,
+                        caption=caption,
+                        filename=f"Prescription_{clean_id}.pdf",
+                        media_id=media_id,
+                    )
+                else:
+                    whatsapp_client.send_text(
+                        to=patient_phone,
+                        text=caption,
+                    )
+
+                crm.audit.record(
+                    user=username,
+                    action="PRESCRIPTION_WHATSAPP_DISPATCH",
+                    entity_type="prescription",
+                    entity_id=prescription_id,
+                    details={"patient_phone": patient_phone, "media_id": media_id, "pdf_path": str(pdf_path)},
+                )
+        except Exception as dispatch_err:
+            logger.warning("WhatsApp prescription delivery failed (non-blocking): %s", dispatch_err)
+
+        return rx
 
     @router.post("/prescriptions/{prescription_id}/amend")
     async def amend_prescription(

@@ -22,8 +22,9 @@ class ToolContractsTests(unittest.TestCase):
 
     def test_online_payment_is_not_implemented(self):
         result = PaymentTools().create_online_payment("700")
-        self.assertFalse(result["success"])
-        self.assertEqual(result["status"], "NOT_IMPLEMENTED")
+        self.assertTrue(result["success"])
+        self.assertEqual(result.get("payment_status"), "Pending")
+        self.assertIn("payment_url", result)
 
     def test_offline_payment_is_pending(self):
         result = PaymentTools().record_offline_payment("700")

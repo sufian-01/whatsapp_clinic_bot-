@@ -80,3 +80,22 @@ class TenantRagRegistry:
         with self._lock:
             self._services.clear()
 
+
+_DEFAULT_REGISTRY: Optional[TenantRagRegistry] = None
+
+
+def get_tenant_rag_registry(base_dir: Optional[Path] = None) -> TenantRagRegistry:
+    """Retrieve or initialize the global tenant RAG registry."""
+    global _DEFAULT_REGISTRY
+    if _DEFAULT_REGISTRY is None:
+        _DEFAULT_REGISTRY = TenantRagRegistry(base_dir=base_dir)
+    elif base_dir is not None and _DEFAULT_REGISTRY.base_dir != base_dir:
+        _DEFAULT_REGISTRY = TenantRagRegistry(base_dir=base_dir)
+    return _DEFAULT_REGISTRY
+
+
+def set_tenant_rag_registry(registry: Optional[TenantRagRegistry]) -> None:
+    """Set or reset the global tenant RAG registry."""
+    global _DEFAULT_REGISTRY
+    _DEFAULT_REGISTRY = registry
+

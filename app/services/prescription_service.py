@@ -489,6 +489,8 @@ class PrescriptionService:
         clinic_phone: str = "",
         clinic_email: str = "",
         clinic_address: str = "",
+        clinic_logo: str = "",
+        doctor_signature: str = "",
     ) -> tuple[str, Path]:
         """Generate a ReportLab PDF document for a prescription, reusing cached PDF for finalized records."""
         if self._pg is not None:
@@ -498,6 +500,8 @@ class PrescriptionService:
                 clinic_phone=clinic_phone,
                 clinic_email=clinic_email,
                 clinic_address=clinic_address,
+                clinic_logo=clinic_logo,
+                doctor_signature=doctor_signature,
             )
         rx = self.get_prescription(prescription_id)
         if not rx:
@@ -510,6 +514,10 @@ class PrescriptionService:
         # Reuse existing PDF if prescription is finalized or amended and file already exists
         if rx.get("status") in ("finalized", "amended") and cached_pdf_path.exists() and cached_pdf_path.stat().st_size > 0:
             return clean_id, cached_pdf_path
+
+        effective_logo = clinic_logo or rx.get("clinic_logo") or ""
+        effective_sig = doctor_signature or rx.get("doctor_signature") or rx.get("Signature") or ""
+        effective_photo = rx.get("doctor_photo") or rx.get("Photo") or ""
 
         pdf_data = PrescriptionPDFData(
             clinic_name=clinic_name,
@@ -538,6 +546,9 @@ class PrescriptionService:
             advice=rx.get("advice", ""),
             follow_up_date=rx.get("follow_up_date", ""),
             version=rx.get("version", 1),
+            clinic_logo=effective_logo,
+            doctor_signature=effective_sig,
+            doctor_photo=effective_photo,
         )
 
         return generate_prescription_pdf(pdf_data, self.pdf_dir)

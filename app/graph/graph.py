@@ -23,6 +23,7 @@ def build_graph(nodes: GraphNodes):
 
     graph.add_edge(START, "classify_intent")
     graph.add_conditional_edges("classify_intent", lambda state: state["intent"], {
+        "greeting": "answer",
         "clinic_information": "retrieve",
         "doctor_information": "doctor_lookup",
         "doctor_list": "doctor_list",

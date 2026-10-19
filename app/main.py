@@ -261,7 +261,7 @@ def create_app() -> FastAPI:
     # 2. CRM Admin Service & API Router
     from .api.doctor import create_doctor_router
     app.include_router(create_admin_router(crm_service, settings))
-    app.include_router(create_doctor_router(crm_service, settings))
+    app.include_router(create_doctor_router(crm_service, settings, whatsapp_client=whatsapp_client))
 
     # 3. Super Admin & Platform Tenant Management Service & Router
     app.include_router(create_super_admin_router(tenant_mgmt_service, settings, whatsapp_client=whatsapp_client))

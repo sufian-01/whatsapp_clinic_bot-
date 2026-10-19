@@ -7,11 +7,17 @@ import re
 from typing import Optional
 from uuid import uuid4
 
+import base64
+import io
+import logging
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import HRFlowable, Image as RLImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,6 +48,9 @@ class PrescriptionPDFData:
     doctor_qualification: str = ""
     doctor_reg_no: str = ""
     version: int = 1
+    clinic_logo: Optional[str] = ""
+    doctor_signature: Optional[str] = ""
+    doctor_photo: Optional[str] = ""
 
 
 def _clean_html_for_pdf(text: str) -> str:
@@ -54,6 +63,33 @@ def _clean_html_for_pdf(text: str) -> str:
     text = re.sub(r"<(?!(?:/?[biu]|/?font|\/?br))[^>]+>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"(<br/>)+", "<br/>", text)
     return text.strip()
+
+
+def _load_image_flowable(img_source: Optional[str], max_width: float, max_height: float) -> Optional[RLImage]:
+    """Safely convert a file path or base64 data URI into a ReportLab RLImage."""
+    if not img_source or not str(img_source).strip():
+        return None
+    source = str(img_source).strip()
+    try:
+        if source.startswith("data:image"):
+            if "," in source:
+                _, b64data = source.split(",", 1)
+            else:
+                b64data = source
+            img_bytes = base64.b64decode(b64data)
+            return RLImage(io.BytesIO(img_bytes), width=max_width, height=max_height)
+
+        path = Path(source)
+        if not path.is_absolute():
+            root_dir = Path(__file__).resolve().parents[2]
+            cand = root_dir / path
+            if cand.exists():
+                path = cand
+        if path.exists() and path.is_file():
+            return RLImage(str(path), width=max_width, height=max_height)
+    except Exception as exc:
+        logger.warning("Could not load image for PDF prescription (%s): %s", source[:40], exc)
+    return None
 
 
 def generate_prescription_pdf(data: PrescriptionPDFData, output_dir: Path) -> tuple[str, Path]:
@@ -133,7 +169,7 @@ def generate_prescription_pdf(data: PrescriptionPDFData, output_dir: Path) -> tu
     story = []
 
     # 1. Clinic Header
-    story.append(Paragraph(data.clinic_name.upper(), clinic_title_style))
+    logo_img = _load_image_flowable(data.clinic_logo, max_width=22 * mm, max_height=22 * mm)
     contact_parts = []
     if data.clinic_address:
         contact_parts.append(data.clinic_address)
@@ -142,7 +178,30 @@ def generate_prescription_pdf(data: PrescriptionPDFData, output_dir: Path) -> tu
     if data.clinic_email:
         contact_parts.append(f"Email: {data.clinic_email}")
     sub_text = " | ".join(contact_parts) if contact_parts else "Medical Consultation & Healthcare Services"
-    story.append(Paragraph(sub_text, clinic_sub_style))
+
+    if logo_img:
+        hdr_table = Table(
+            [
+                [
+                    logo_img,
+                    [
+                        Paragraph(data.clinic_name.upper(), clinic_title_style),
+                        Spacer(1, 1 * mm),
+                        Paragraph(sub_text, clinic_sub_style),
+                    ],
+                ]
+            ],
+            colWidths=[26 * mm, 152 * mm],
+        )
+        hdr_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("PADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(hdr_table)
+    else:
+        story.append(Paragraph(data.clinic_name.upper(), clinic_title_style))
+        story.append(Paragraph(sub_text, clinic_sub_style))
+
     story.append(Spacer(1, 2.5 * mm))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor("#1e3a8a"), spaceAfter=3.5 * mm))
 
@@ -311,14 +370,23 @@ def generate_prescription_pdf(data: PrescriptionPDFData, output_dir: Path) -> tu
 
     # 8. Signature Footer
     story.append(Spacer(1, 6 * mm))
-    sig_text = f"_____________________________<br/><b>{doc_display}</b>"
+    sig_img = _load_image_flowable(data.doctor_signature, max_width=38 * mm, max_height=16 * mm)
+
+    sig_cell_elements = []
+    if sig_img:
+        sig_cell_elements.append(sig_img)
+        sig_cell_elements.append(Spacer(1, 1 * mm))
+    else:
+        sig_cell_elements.append(Paragraph("<font color='#94a3b8'>_____________________________</font>", val_style))
+
+    sig_cell_elements.append(Paragraph(f"<b>{doc_display}</b>", val_style))
     if cred_str:
-        sig_text += f"<br/><font size='7.5' color='#64748b'>{cred_str}</font>"
+        sig_cell_elements.append(Paragraph(f"<font size='7.5' color='#64748b'>{cred_str}</font>", val_style))
 
     sig_data = [
         [
             Paragraph("<font color='#64748b' size='7.5'>This digital prescription is electronically generated and authenticated under clinical practice standards.</font>", val_style),
-            Paragraph(sig_text, val_style),
+            sig_cell_elements,
         ]
     ]
     sig_table = Table(sig_data, colWidths=[108 * mm, 70 * mm])

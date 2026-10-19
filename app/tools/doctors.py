@@ -455,6 +455,10 @@ class DoctorDirectory:
                         clean_k = "Qualification"
                     elif k in ("registration_number", "reg_no", "registration_no"):
                         clean_k = "Registration Number"
+                    elif k == "photo":
+                        clean_k = "Photo"
+                    elif k == "signature":
+                        clean_k = "Signature"
                     if clean_k in headers:
                         row_dict[clean_k] = str(v).strip()
                     else:

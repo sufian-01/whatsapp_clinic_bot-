@@ -59,11 +59,17 @@ A production-grade, multi-tenant clinical automation and SaaS platform designed 
 - **Priority Queue Numbers:** Chronological consultation order (`#1 NEXT`, `#2`, `#3...`) computed naturally by appointment date, time, and token sequence.
 - **Server-Side Pagination:** Zero browser freezing on large patient and prescription datasets with server-side limit/offset queries (`page` & `page_size`).
 
-### 4. Natural Conversational AI (LangGraph + Gemini + Sarvam AI)
-- **Multilingual Support:** Conversational in Hindi, Hinglish, and English.
-- **Context Retention:** Retains multi-turn conversation context (e.g., patient asking *"Dr. Arjun kab free hain?"* followed by *"Aur kal?"* accurately tracks Dr. Arjun).
-- **Voice Intelligence:** Sarvam AI STT (`saaras:v3`) converts voice notes to text; Sarvam AI TTS (`bulbul:v3`) generates natural audio voice note replies.
-- **Structured Interactive UI:** Uses Meta interactive reply buttons and lists when enabled; falls back seamlessly to text menus when disabled or on unsupported channels.
+### 4. Natural Conversational AI & Dual-Engine Mode
+- **Dual-Engine Architecture (Super Admin Switchboard):**
+  - **🧠 AI-Powered Agent Mode (Default: Active):** Full dynamic LLM understanding at every step. Patient can speak in Hindi, Hinglish, or English, ask side-questions (address, timing, fees) mid-booking without breaking flow, and receive intelligent contextual resumption.
+  - **⚡ Rule-Based Mode (Token-Saver):** Toggled OFF per clinic from Super Admin. Operates strictly via deterministic menus, interactive quick buttons, and regex phone/name validators with zero/minimal LLM token consumption.
+- **Side-Question Resumption:** When a patient asks clinic information (e.g. *"hospital ka address dena"*) while choosing a doctor or giving a phone number, the bot answers accurately from RAG knowledge and gracefully appends step resumption guidance.
+- **Conversational Disambiguation:** Distinguishes clarifying remarks (e.g. *"number du ?"*) from step input without blindly storing conversational queries into patient records.
+
+### 5. Automated WhatsApp Prescription Dispatch (HealthPlix Style)
+- **Instant Consultation Delivery:** When a physician clicks **"Finalize"** on a prescription in the Doctor Portal, the system generates a high-fidelity ReportLab PDF document.
+- **Direct Patient WhatsApp Delivery:** Dispatches the digital prescription PDF directly to the patient's registered WhatsApp phone number via Meta WhatsApp Cloud API (`send_document` / `upload_media`) with a personalized clinical message and appointment token reference.
+- **Non-Blocking Reliability:** Asynchronous, fail-safe background dispatch ensuring clinical workflows never hang even during transient network or WhatsApp provider outages.
 
 ---
 
@@ -126,12 +132,44 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
+## 🐳 Docker & Containerized Production Deployment
+
+The entire Kodnexus platform is fully containerized with automated PostgreSQL healthchecks, directory provisioning, and automatic Alembic migrations.
+
+### Quick Start with Docker Compose:
+
+1. **Configure Production Environment:**
+   ```bash
+   cp .env.docker.example .env
+   # Edit .env with your Gemini API key and Meta WhatsApp credentials
+   ```
+
+2. **Build and Launch Containerized Stack:**
+   ```bash
+   docker compose up --build -d
+   ```
+
+3. **Verify Deployment & Container Health:**
+   ```bash
+   docker compose ps
+   docker compose logs -f app
+   ```
+
+The application automatically:
+- Connects to the isolated `postgres:15-alpine` container on port `5432`.
+- Waits for database readiness with automated retry backoffs.
+- Applies all database migrations automatically (`alembic upgrade head`).
+- Creates persistent volumes for clinic data (`clinic_data`) and logs (`clinic_logs`).
+- Binds to `http://localhost:8000` with active container healthchecks on `/health`.
+
+---
+
 ## 🧪 Automated Test Suites
 
-All 52 tests covering Multi-Tenant Isolation, Doctor Portal, and Super Admin pass:
+All 452 automated tests covering Multi-Tenant Isolation, Dynamic RAG Ingestion, Doctor Consultation Queues, Super Admin Switchboards, AI Reasoning, and WhatsApp Cloud API dispatches pass cleanly:
 
 ```bash
-python -m pytest tests/test_phase1e_super_admin.py tests/test_phase2_doctor_portal.py tests/test_saas_multitenant_platform.py -v
+python -m pytest tests/ -q
 ```
 
 ---

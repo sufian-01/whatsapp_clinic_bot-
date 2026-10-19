@@ -46,7 +46,8 @@ class TenantManagementService:
         self._phone_id_to_tenant: Dict[str, str] = {}  # whatsapp_phone_number_id -> tenant_id
         self._tenant_admins: Dict[str, Dict[str, Any]] = {}  # username -> admin dict
         self._platform_audit_events: List[Dict[str, Any]] = []
-        self.rag_registry = TenantRagRegistry(base_dir=rag_base_dir)
+        from ..rag.tenant_service import get_tenant_rag_registry
+        self.rag_registry = get_tenant_rag_registry(base_dir=rag_base_dir)
 
         # Seed default clinic tenant
         self._seed_default_tenant()

@@ -24,36 +24,26 @@ import { DoctorAppointmentsView } from "./views/doctor_appointments.js";
 import { DoctorSlotsView } from "./views/doctor_slots.js";
 import { DoctorPatientsView } from "./views/doctor_patients.js";
 import { DoctorPrescriptionsView } from "./views/doctor_prescriptions.js";
+import { ThemeManager } from "./theme.js";
 
-export const ThemeManager = {
-  init() {
-    const theme = this.getTheme();
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("crm_theme", theme);
-  },
-  getTheme() {
-    return localStorage.getItem("crm_theme") || "light";
-  },
-  setTheme(theme) {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("crm_theme", theme);
-    const btn = document.getElementById("header-theme-toggle");
-    if (btn) btn.textContent = theme === "dark" ? "☀️" : "🌙";
-  },
-  toggle() {
-    const current = this.getTheme();
-    const next = current === "dark" ? "light" : "dark";
-    this.setTheme(next);
-    return next;
-  },
-};
+export { ThemeManager };
 
-const DOCTOR_ROUTES = new Set([
+const DOCTOR_ONLY_ROUTES = new Set([
   "doctor-dashboard",
   "doctor-appointments",
   "doctor-slots",
   "doctor-patients",
   "doctor-prescriptions",
+]);
+
+const DOCTOR_ALLOWED_ROUTES = new Set([
+  "doctor-dashboard",
+  "doctor-appointments",
+  "doctor-slots",
+  "doctor-patients",
+  "doctor-prescriptions",
+  "settings",
+  "doctor-settings",
 ]);
 
 const VIEWS = {
@@ -144,6 +134,11 @@ const VIEWS = {
     title: "Prescriptions",
     subtitle: "Author, Finalize & Issue Digital Prescriptions",
     module: DoctorPrescriptionsView,
+  },
+  "doctor-settings": {
+    title: "Doctor Settings",
+    subtitle: "Profile, Signature & Clinical Credentials",
+    module: SettingsView,
   },
 };
 
@@ -291,8 +286,52 @@ class App {
       }
     }
 
-    if (clinicEl && user.clinic_name) {
-      clinicEl.textContent = user.clinic_name;
+    this.updateBranding(user.clinic_name, user.clinic_logo);
+
+    // Fetch fresh clinic branding from server to ensure latest logo and name apply everywhere
+    API.getClinicSettings()
+      .then((settings) => {
+        if (settings) {
+          const cName = settings.clinic_name || settings.name || user.clinic_name;
+          const cLogo = settings.logo !== undefined ? settings.logo : user.clinic_logo;
+          this.updateBranding(cName, cLogo);
+        }
+      })
+      .catch((err) => console.debug("Could not refresh clinic branding:", err));
+  }
+
+  updateBranding(clinicName, clinicLogo) {
+    const clinicEl = document.getElementById("header-clinic-name");
+    const brandIconEl = document.getElementById("sidebar-brand-icon") || document.querySelector(".sidebar-header .brand-icon");
+    if (clinicEl && clinicName) {
+      clinicEl.textContent = clinicName;
+      document.title = `${clinicName} - Portal`;
+    }
+    if (brandIconEl) {
+      if (clinicLogo && typeof clinicLogo === "string" && clinicLogo.trim()) {
+        brandIconEl.innerHTML = `<img id="sidebar-clinic-logo-img" src="${clinicLogo}" alt="Logo" style="width: 100%; height: 100%; object-fit: contain; border-radius: var(--radius-md); background: #ffffff; padding: 2px;" />`;
+        brandIconEl.style.background = "transparent";
+        brandIconEl.style.boxShadow = "none";
+      } else {
+        brandIconEl.innerHTML = "⚕";
+        brandIconEl.style.background = "";
+        brandIconEl.style.boxShadow = "";
+      }
+    }
+    const user = Auth.getUser();
+    if (user) {
+      let changed = false;
+      if (clinicName && user.clinic_name !== clinicName) {
+        user.clinic_name = clinicName;
+        changed = true;
+      }
+      if (clinicLogo !== undefined && user.clinic_logo !== clinicLogo) {
+        user.clinic_logo = clinicLogo;
+        changed = true;
+      }
+      if (changed) {
+        Auth.setUser(user);
+      }
     }
   }
 
@@ -352,9 +391,10 @@ class App {
 
     let viewKey;
     if (isDoc) {
-      // Doctor role: restrict strictly to doctor routes
-      if (DOCTOR_ROUTES.has(rawHash)) {
-        viewKey = rawHash;
+      // Doctor role: allow doctor routes and settings
+      const normalized = (rawHash === "doctor-settings" || rawHash === "settings") ? "settings" : rawHash;
+      if (DOCTOR_ALLOWED_ROUTES.has(rawHash) || DOCTOR_ALLOWED_ROUTES.has(normalized)) {
+        viewKey = normalized;
       } else {
         viewKey = "doctor-dashboard";
         if (window.location.hash !== "#doctor-dashboard") {
@@ -363,8 +403,8 @@ class App {
         }
       }
     } else {
-      // Admin role: default to dashboard; redirect out of doctor routes
-      if (DOCTOR_ROUTES.has(rawHash)) {
+      // Admin role: default to dashboard; redirect out of doctor-only routes
+      if (DOCTOR_ONLY_ROUTES.has(rawHash)) {
         viewKey = "dashboard";
         window.location.hash = "#dashboard";
         return;
@@ -385,7 +425,8 @@ class App {
 
     // Update active nav links
     document.querySelectorAll(".nav-item").forEach((el) => {
-      if (el.getAttribute("data-view") === viewKey) {
+      const dataView = el.getAttribute("data-view");
+      if (dataView === viewKey || (viewKey === "settings" && dataView === "doctor-settings") || (viewKey === "doctor-settings" && dataView === "settings")) {
         el.classList.add("active");
       } else {
         el.classList.remove("active");
@@ -395,15 +436,20 @@ class App {
     // Update Header titles
     const headingEl = document.getElementById("view-heading");
     const subheadingEl = document.getElementById("view-subheading");
-    if (headingEl) headingEl.textContent = config.title;
-    if (subheadingEl) subheadingEl.textContent = config.subtitle;
+    if (headingEl) {
+      headingEl.textContent = (viewKey === "settings" && Auth.isDoctor()) ? "Doctor Settings" : config.title;
+    }
+    if (subheadingEl) {
+      subheadingEl.textContent = (viewKey === "settings" && Auth.isDoctor()) ? "Profile, Signature & Clinical Credentials" : config.subtitle;
+    }
 
     // Toggle view containers
     document.querySelectorAll(".view-container").forEach((el) => {
       el.classList.remove("active");
     });
 
-    const targetContainer = document.getElementById(`view-${viewKey}`);
+    const targetContainerId = (viewKey === "doctor-settings") ? "view-settings" : `view-${viewKey}`;
+    const targetContainer = document.getElementById(targetContainerId);
     if (targetContainer) {
       targetContainer.classList.add("active");
     }
@@ -429,9 +475,15 @@ class App {
   }
 }
 
-// Bootstrap application on DOM ready
-document.addEventListener("DOMContentLoaded", () => {
+function bootstrap() {
   const app = new App();
+  window.App = app;
   app.init();
-});
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootstrap);
+} else {
+  bootstrap();
+}
 

@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from ..base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -43,6 +43,9 @@ class Doctor(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     start_time: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     end_time: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     consultation_fee: Mapped[str] = mapped_column(String(20), default="500", nullable=False)
+    photo: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    signature: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="Active", nullable=False, index=True)
 
     # Relationships

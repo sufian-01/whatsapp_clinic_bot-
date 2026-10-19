@@ -123,6 +123,7 @@
 
   const TIER_DEFAULTS = {
     'STARTER': {
+      ai_agent: true,
       voice_inbound: false,
       voice_outbound: false,
       interactive_lists: true,
@@ -133,6 +134,7 @@
       report_enquiry: true,
     },
     'PROFESSIONAL': {
+      ai_agent: true,
       voice_inbound: true,
       voice_outbound: false,
       interactive_lists: true,
@@ -143,6 +145,7 @@
       report_enquiry: true,
     },
     'ENTERPRISE': {
+      ai_agent: true,
       voice_inbound: true,
       voice_outbound: true,
       interactive_lists: true,
@@ -155,6 +158,7 @@
   };
 
   const FEATURE_KEYS = [
+    'ai_agent',
     'voice_inbound',
     'voice_outbound',
     'interactive_lists',
@@ -275,6 +279,37 @@
   if (openCreateTenantBtn) openCreateTenantBtn.onclick = () => createTenantModal.classList.add('active');
   if (createTenantTopBtn) createTenantTopBtn.onclick = () => createTenantModal.classList.add('active');
 
+  // Create Tenant Logo file upload handler
+  const createTenantLogoFile = document.getElementById('createTenantLogoFile');
+  const createTenantLogoInput = document.getElementById('createTenantLogoInput');
+  const createTenantLogoPreviewBox = document.getElementById('createTenantLogoPreviewBox');
+  const createTenantLogoPreview = document.getElementById('createTenantLogoPreview');
+
+  if (createTenantLogoFile && createTenantLogoInput) {
+    createTenantLogoFile.onchange = (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (loadEvt) => {
+          const dataUri = loadEvt.target.result;
+          createTenantLogoInput.value = dataUri;
+          if (createTenantLogoPreview) createTenantLogoPreview.src = dataUri;
+          if (createTenantLogoPreviewBox) createTenantLogoPreviewBox.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    };
+    createTenantLogoInput.oninput = () => {
+      const val = createTenantLogoInput.value.trim();
+      if (val && createTenantLogoPreview && createTenantLogoPreviewBox) {
+        createTenantLogoPreview.src = val;
+        createTenantLogoPreviewBox.style.display = 'block';
+      } else if (createTenantLogoPreviewBox) {
+        createTenantLogoPreviewBox.style.display = 'none';
+      }
+    };
+  }
+
   const createTenantForm = document.getElementById('createTenantForm');
   if (createTenantForm) {
     createTenantForm.onsubmit = async (e) => {
@@ -282,6 +317,7 @@
       const payload = {
         name: createTenantForm.name.value.trim(),
         id: createTenantForm.id.value.trim() || undefined,
+        logo: createTenantForm.logo ? createTenantForm.logo.value.trim() : undefined,
         whatsapp_phone_number_id: createTenantForm.whatsapp_phone_number_id.value.trim() || undefined,
         whatsapp_phone_number: createTenantForm.whatsapp_phone_number.value.trim() || undefined,
         whatsapp_waba_id: createTenantForm.whatsapp_waba_id.value.trim() || undefined,
@@ -298,6 +334,7 @@
         });
         createTenantModal.classList.remove('active');
         createTenantForm.reset();
+        if (createTenantLogoPreviewBox) createTenantLogoPreviewBox.style.display = 'none';
         await loadTenants();
       } catch (err) {
         alert(`Failed to create clinic facility: ${err.message}`);
@@ -371,6 +408,21 @@
     document.getElementById('m_phone').value = t.phone || '';
     document.getElementById('m_email').value = t.email || '';
     document.getElementById('m_address').value = t.address || '';
+
+    const logoVal = t.logo || '';
+    const mLogoInput = document.getElementById('m_logo');
+    const mLogoPrevBox = document.getElementById('m_logoPreviewBox');
+    const mLogoPrev = document.getElementById('m_logoPreview');
+    if (mLogoInput) mLogoInput.value = logoVal;
+    if (mLogoPrevBox && mLogoPrev) {
+      if (logoVal) {
+        mLogoPrev.src = logoVal;
+        mLogoPrevBox.style.display = 'block';
+      } else {
+        mLogoPrevBox.style.display = 'none';
+      }
+    }
+
     const waStatusBox = document.getElementById('waConnectionStatus');
     if (waStatusBox) waStatusBox.style.display = 'none';
 
@@ -463,6 +515,37 @@
     };
   }
 
+  // Manage Tenant Logo file upload handler
+  const mLogoFile = document.getElementById('m_logoFile');
+  const mLogoInput = document.getElementById('m_logo');
+  const mLogoPreviewBox = document.getElementById('m_logoPreviewBox');
+  const mLogoPreview = document.getElementById('m_logoPreview');
+
+  if (mLogoFile && mLogoInput) {
+    mLogoFile.onchange = (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (loadEvt) => {
+          const dataUri = loadEvt.target.result;
+          mLogoInput.value = dataUri;
+          if (mLogoPreview) mLogoPreview.src = dataUri;
+          if (mLogoPreviewBox) mLogoPreviewBox.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    };
+    mLogoInput.oninput = () => {
+      const val = mLogoInput.value.trim();
+      if (val && mLogoPreview && mLogoPreviewBox) {
+        mLogoPreview.src = val;
+        mLogoPreviewBox.style.display = 'block';
+      } else if (mLogoPreviewBox) {
+        mLogoPreviewBox.style.display = 'none';
+      }
+    };
+  }
+
   // Save Facility Details (Overview & WhatsApp)
   const manageOverviewForm = document.getElementById('manageOverviewForm');
   if (manageOverviewForm) {
@@ -471,6 +554,7 @@
       if (!activeManageTenantId) return;
       const payload = {
         name: document.getElementById('m_clinicName').value.trim(),
+        logo: document.getElementById('m_logo') ? document.getElementById('m_logo').value.trim() || undefined : undefined,
         whatsapp_phone_number_id: document.getElementById('m_waPhoneId').value.trim(),
         whatsapp_phone_number: document.getElementById('m_waPhone').value.trim(),
         whatsapp_waba_id: document.getElementById('m_waWaba').value.trim(),

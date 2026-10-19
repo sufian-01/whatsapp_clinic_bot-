@@ -253,14 +253,22 @@ class MetaWhatsAppClient:
     def send_document(
         self,
         to: str,
-        document_url: str,
+        document_url: Optional[str] = None,
         caption: Optional[str] = None,
         filename: Optional[str] = None,
         phone_number_id: Optional[str] = None,
+        media_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send PDF or document attachment."""
+        """Send PDF or document attachment via URL link or uploaded media ID."""
         recipient = normalize_phone_number(to, self.default_country_code)
-        doc_obj: Dict[str, Any] = {"link": document_url}
+        doc_obj: Dict[str, Any] = {}
+        if media_id:
+            doc_obj["id"] = media_id.strip()
+        elif document_url:
+            doc_obj["link"] = document_url.strip()
+        else:
+            doc_obj["link"] = ""
+
         if caption:
             doc_obj["caption"] = caption
         if filename:

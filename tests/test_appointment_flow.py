@@ -81,8 +81,8 @@ class AppointmentFlowTests(unittest.TestCase):
         state["slot_id"] = "S1"
         state["patient_id"] = "PAT-NEW"
         result = self.send(state, "payment_online")
-        self.assertIn("available soon", result["response"])
-        self.assertNotEqual(result.get("payment_status"), "Paid")
+        self.assertTrue("Razorpay" in result["response"] or "rzp.io" in result["response"] or "UPI" in result["response"])
+        self.assertEqual(result.get("payment_status"), "Pending")
 
     def test_offline_payment_generates_pending_confirmation(self):
         state = self.graph.invoke({"user_text": "I want to book an appointment"})

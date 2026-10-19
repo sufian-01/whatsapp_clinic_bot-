@@ -1402,6 +1402,16 @@ class CrmService:
         if formatted not in valid:
             raise ValueError(f"Invalid payment status '{new_status}'. Allowed: {', '.join(valid)}")
         self.patients.update_payment_status(identifier, formatted)
+        if hasattr(self.payments, "mark_payment_status"):
+            try:
+                self.payments.mark_payment_status(identifier, formatted)
+            except Exception:
+                pass
+        elif hasattr(self.payments, "mark_payment_paid") and formatted == "Paid":
+            try:
+                self.payments.mark_payment_paid(identifier)
+            except Exception:
+                pass
         self.audit.record(
             user=admin_user,
             action="PAYMENT_STATUS_UPDATE",
@@ -1410,6 +1420,60 @@ class CrmService:
             details={"payment_status": formatted},
         )
         return {"success": True, "identifier": identifier, "payment_status": formatted}
+
+    def verify_online_payment(
+        self,
+        payment_id: str,
+        razorpay_payment_id: str,
+        razorpay_order_id: str = "",
+        razorpay_signature: str = "",
+        admin_user: str = "admin",
+    ) -> dict:
+        """Verify and record an online Razorpay payment, marking appointment as Paid."""
+        if hasattr(self.patients, "update_appointment_details"):
+            try:
+                self.patients.update_appointment_details(
+                    payment_id,
+                    {
+                        "payment_status": "Paid",
+                        "payment_method": "Razorpay / UPI",
+                        "transaction_ref": razorpay_payment_id,
+                    },
+                )
+            except Exception:
+                self.patients.update_payment_status(payment_id, "Paid")
+        else:
+            self.patients.update_payment_status(payment_id, "Paid")
+
+        if hasattr(self.payments, "mark_payment_status"):
+            try:
+                self.payments.mark_payment_status(payment_id, "Paid", transaction_reference=razorpay_payment_id)
+            except Exception:
+                pass
+        elif hasattr(self.payments, "mark_payment_paid"):
+            try:
+                self.payments.mark_payment_paid(payment_id, transaction_ref=razorpay_payment_id)
+            except Exception:
+                pass
+
+        self.audit.record(
+            user=admin_user,
+            action="ONLINE_PAYMENT_VERIFIED",
+            entity_type="payment",
+            entity_id=payment_id,
+            details={
+                "razorpay_payment_id": razorpay_payment_id,
+                "razorpay_order_id": razorpay_order_id,
+                "status": "Paid",
+            },
+        )
+        return {
+            "success": True,
+            "payment_id": payment_id,
+            "razorpay_payment_id": razorpay_payment_id,
+            "payment_status": "Paid",
+            "message": "Payment verified and appointment confirmed",
+        }
 
     def record_manual_payment(
         self,
@@ -2137,3 +2201,176 @@ class CrmService:
             "today_appointments": today_appts[:10],
             "upcoming_appointments": upcoming_appts[:10],
         }
+
+    # -----------------------------------------------------------------------
+    # Clinic Settings & Payment Gateway Configuration
+    # -----------------------------------------------------------------------
+
+    def get_clinic_settings(self, tenant_id: Optional[str] = None) -> dict:
+        """Fetch clinic facility profile and payment gateway configuration."""
+        from ..core.tenant import get_current_tenant
+        tid = tenant_id or (get_current_tenant().tenant_id if get_current_tenant() else "default")
+
+        settings_dict = {
+            "tenant_id": tid,
+            "clinic_name": self.clinic_name,
+            "legal_name": self.clinic_name,
+            "logo": "",
+            "phone": self.support_phone,
+            "email": "",
+            "address": "",
+            "timezone": self.clinic_timezone,
+            "currency": "INR",
+            "upi_id": self.clinic_upi_id,
+            "razorpay_key_id": "",
+            "razorpay_key_secret": "",
+            "is_razorpay_configured": False,
+        }
+
+    def _get_db_session_factory(self):
+        if hasattr(self.patients, "session_factory"):
+            return self.patients.session_factory
+        if hasattr(getattr(self.patients, "repository", None), "session_factory"):
+            return self.patients.repository.session_factory
+        if hasattr(self.doctors, "session_factory"):
+            return self.doctors.session_factory
+        if hasattr(getattr(self.doctors, "directory", None), "session_factory"):
+            return self.doctors.directory.session_factory
+        if hasattr(self.slots, "session_factory"):
+            return self.slots.session_factory
+        if hasattr(getattr(self.slots, "repository", None), "session_factory"):
+            return self.slots.repository.session_factory
+        if hasattr(self.payments, "session_factory"):
+            return self.payments.session_factory
+        if hasattr(getattr(self.payments, "repository", None), "session_factory"):
+            return self.payments.repository.session_factory
+        return None
+
+    def get_clinic_settings(self, tenant_id: Optional[str] = None) -> dict:
+        """Fetch clinic facility profile and payment gateway configuration."""
+        from ..core.tenant import get_current_tenant
+        tid = tenant_id or (get_current_tenant().tenant_id if get_current_tenant() else "default")
+
+        settings_dict = {
+            "tenant_id": tid,
+            "clinic_name": self.clinic_name,
+            "legal_name": self.clinic_name,
+            "logo": getattr(self, "clinic_logo", ""),
+            "phone": self.support_phone,
+            "email": getattr(self, "clinic_email", ""),
+            "address": getattr(self, "clinic_address", ""),
+            "clinic_address": getattr(self, "clinic_address", ""),
+            "timezone": self.clinic_timezone,
+            "currency": "INR",
+            "upi_id": self.clinic_upi_id,
+            "razorpay_key_id": getattr(self, "razorpay_key_id", ""),
+            "razorpay_key_secret": getattr(self, "razorpay_key_secret", ""),
+            "is_razorpay_configured": bool(
+                getattr(self, "razorpay_key_id", "") and getattr(self, "razorpay_key_secret", "")
+            ),
+        }
+
+        # If PostgreSQL session factory is available, query the Clinic table
+        sf = self._get_db_session_factory()
+        if sf:
+            try:
+                from sqlalchemy import or_, select
+                from ..db.models import Clinic
+                with sf() as session:
+                    c = session.execute(
+                        select(Clinic).where(or_(Clinic.id == tid, Clinic.id == "default"))
+                    ).scalars().first()
+                    if not c:
+                        c = session.execute(select(Clinic)).scalars().first()
+                    if c:
+                        settings_dict["clinic_name"] = c.name or self.clinic_name
+                        settings_dict["legal_name"] = c.legal_name or c.name or self.clinic_name
+                        settings_dict["logo"] = c.logo or getattr(self, "clinic_logo", "")
+                        settings_dict["phone"] = c.phone or self.support_phone
+                        settings_dict["support_phone"] = c.phone or self.support_phone
+                        settings_dict["email"] = c.email or getattr(self, "clinic_email", "")
+                        settings_dict["address"] = c.address or getattr(self, "clinic_address", "")
+                        settings_dict["clinic_address"] = c.address or getattr(self, "clinic_address", "")
+                        settings_dict["timezone"] = c.timezone or self.clinic_timezone
+                        settings_dict["currency"] = c.currency or "INR"
+                        settings_dict["upi_id"] = c.upi_id or self.clinic_upi_id
+                        settings_dict["razorpay_key_id"] = c.razorpay_key_id or getattr(self, "razorpay_key_id", "")
+                        settings_dict["razorpay_key_secret"] = c.razorpay_key_secret or getattr(self, "razorpay_key_secret", "")
+                        settings_dict["is_razorpay_configured"] = bool(
+                            settings_dict["razorpay_key_id"] and settings_dict["razorpay_key_secret"]
+                        )
+            except Exception as exc:
+                logger.warning("Error fetching clinic settings from DB for %s: %s", tid, exc)
+
+        return settings_dict
+
+    def update_clinic_settings(
+        self,
+        updates: dict,
+        admin_user: str = "admin",
+        tenant_id: Optional[str] = None,
+    ) -> dict:
+        """Update clinic facility profile, logo, and payment gateway configuration."""
+        from ..core.tenant import get_current_tenant
+        tid = tenant_id or (get_current_tenant().tenant_id if get_current_tenant() else "default")
+
+        if "name" in updates:
+            self.clinic_name = str(updates["name"]).strip()
+        if "clinic_name" in updates:
+            self.clinic_name = str(updates["clinic_name"]).strip()
+        if "phone" in updates:
+            self.support_phone = str(updates["phone"]).strip()
+        if "support_phone" in updates:
+            self.support_phone = str(updates["support_phone"]).strip()
+        if "upi_id" in updates:
+            self.clinic_upi_id = str(updates["upi_id"]).strip()
+        if "logo" in updates:
+            self.clinic_logo = str(updates["logo"]).strip()
+        if "address" in updates or "clinic_address" in updates:
+            self.clinic_address = str(updates.get("address") or updates.get("clinic_address", "")).strip()
+        if "email" in updates:
+            self.clinic_email = str(updates["email"]).strip()
+        if "razorpay_key_id" in updates:
+            self.razorpay_key_id = str(updates["razorpay_key_id"]).strip()
+        if "razorpay_key_secret" in updates:
+            self.razorpay_key_secret = str(updates["razorpay_key_secret"]).strip()
+
+        # Update PostgreSQL
+        sf = self._get_db_session_factory()
+        if sf:
+            try:
+                from sqlalchemy import or_, select
+                from ..db.models import Clinic
+                with sf() as session:
+                    c = session.execute(
+                        select(Clinic).where(or_(Clinic.id == tid, Clinic.id == "default"))
+                    ).scalars().first()
+                    if not c:
+                        c = session.execute(select(Clinic)).scalars().first()
+                    if c:
+                        if "name" in updates: c.name = str(updates["name"]).strip()
+                        if "clinic_name" in updates: c.name = str(updates["clinic_name"]).strip()
+                        if "legal_name" in updates: c.legal_name = str(updates["legal_name"]).strip()
+                        if "logo" in updates: c.logo = str(updates["logo"]).strip()
+                        if "phone" in updates: c.phone = str(updates["phone"]).strip()
+                        if "support_phone" in updates: c.phone = str(updates["support_phone"]).strip()
+                        if "email" in updates: c.email = str(updates["email"]).strip()
+                        if "address" in updates or "clinic_address" in updates:
+                            c.address = str(updates.get("address") or updates.get("clinic_address", "")).strip()
+                        if "timezone" in updates: c.timezone = str(updates["timezone"]).strip()
+                        if "currency" in updates: c.currency = str(updates["currency"]).strip()
+                        if "upi_id" in updates: c.upi_id = str(updates["upi_id"]).strip()
+                        if "razorpay_key_id" in updates: c.razorpay_key_id = str(updates["razorpay_key_id"]).strip()
+                        if "razorpay_key_secret" in updates: c.razorpay_key_secret = str(updates["razorpay_key_secret"]).strip()
+                        session.commit()
+            except Exception as exc:
+                logger.error("Error updating clinic settings in DB for %s: %s", tid, exc)
+
+        self.audit.record(
+            user=admin_user,
+            action="CLINIC_SETTINGS_UPDATE",
+            entity_type="clinic",
+            entity_id=tid,
+            details={k: ("***" if "secret" in k else v) for k, v in updates.items()},
+        )
+        return self.get_clinic_settings(tenant_id=tid)

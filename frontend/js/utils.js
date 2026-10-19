@@ -127,7 +127,17 @@ export function debounce(func, delay = 300) {
 }
 
 export const Modal = {
-  open(title, bodyHtml, footerHtml = "") {
+  open(titleOrConfig, bodyHtml = "", footerHtml = "") {
+    let title = titleOrConfig;
+    let body = bodyHtml;
+    let footer = footerHtml;
+
+    if (titleOrConfig && typeof titleOrConfig === "object") {
+      title = titleOrConfig.title || "";
+      body = titleOrConfig.body || titleOrConfig.content || titleOrConfig.bodyHtml || "";
+      footer = titleOrConfig.footer || titleOrConfig.footerHtml || "";
+    }
+
     const backdrop = document.getElementById("app-modal-backdrop");
     const titleEl = document.getElementById("app-modal-title");
     const bodyEl = document.getElementById("app-modal-body");
@@ -136,11 +146,11 @@ export const Modal = {
     if (!backdrop || !titleEl || !bodyEl) return;
 
     titleEl.innerHTML = title;
-    bodyEl.innerHTML = bodyHtml;
+    bodyEl.innerHTML = body;
 
     if (footerEl) {
-      if (footerHtml) {
-        footerEl.innerHTML = footerHtml;
+      if (footer) {
+        footerEl.innerHTML = footer;
         footerEl.style.display = "flex";
       } else {
         footerEl.innerHTML = "";

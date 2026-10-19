@@ -28,6 +28,16 @@ export const Auth = {
     }
   },
 
+  setUser(user) {
+    if (user) {
+      try {
+        localStorage.setItem(USER_KEY, JSON.stringify(user));
+      } catch (e) {
+        console.warn("Could not save user to storage:", e);
+      }
+    }
+  },
+
   clearSession() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);

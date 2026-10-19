@@ -785,6 +785,9 @@ class PostgresDoctorDirectory:
                 "registration_no": "registration_no", "Registration No": "registration_no",
                 "phone": "phone", "Phone": "phone",
                 "email": "email", "Email": "email",
+                "photo": "photo", "Photo": "photo",
+                "signature": "signature", "Signature": "signature",
+                "bio": "bio", "Bio": "bio",
             }
             for k, v in updates.items():
                 attr = key_map.get(k)
@@ -813,6 +816,10 @@ class PostgresDoctorDirectory:
             "Registration No": d.registration_no or "",
             "Phone": d.phone or "",
             "Email": d.email or "",
+            "Photo": d.photo or "",
+            "Signature": d.signature or "",
+            "Bio": d.bio or "",
+            "bio": d.bio or "",
         }
 
 
@@ -1018,15 +1025,24 @@ class PostgresSlotRepository:
         """Create new appointment slot in PostgreSQL."""
         tenant_id = _resolve_tenant_id()
         with self.session_factory() as session:
-            doc_id = data.get("Doctor ID") or data.get("doctor_id") or ""
+            doc_id = str(data.get("Doctor ID") or data.get("doctor_id") or "").strip()
+            doc_name = str(data.get("Doctor Name") or data.get("doctor_name") or "").strip()
+            conds = []
+            if doc_id:
+                conds.extend([Doctor.doctor_id == doc_id, Doctor.id == doc_id])
+            if doc_name:
+                conds.append(Doctor.name.ilike(doc_name))
+            if not conds:
+                conds.append(Doctor.doctor_id != "")
+
             doc = session.execute(
                 select(Doctor).where(
                     Doctor.tenant_id == tenant_id,
-                    or_(Doctor.doctor_id == doc_id.strip(), Doctor.id == doc_id.strip(), Doctor.name.ilike(data.get("Doctor Name", ""))),
+                    or_(*conds),
                 )
             ).scalars().first()
             if not doc:
-                raise ValueError(f"Doctor '{doc_id}' not found")
+                raise ValueError(f"Doctor '{doc_id or doc_name}' not found")
 
             sid = data.get("Slot ID") or data.get("slot_id") or f"SLOT{uuid4().hex[:6].upper()}"
             slot = AppointmentSlot(
@@ -1666,6 +1682,8 @@ class PostgresPrescriptionService:
         clinic_phone: str = "",
         clinic_email: str = "",
         clinic_address: str = "",
+        clinic_logo: str = "",
+        doctor_signature: str = "",
     ) -> tuple[str, Path]:
         """Generate a ReportLab PDF document for a prescription, caching generated PDFs."""
         rx = self.get_prescription(prescription_id)
@@ -1680,6 +1698,40 @@ class PostgresPrescriptionService:
         if rx.get("status") in ("finalized", "amended") and cached_pdf_path.exists() and cached_pdf_path.stat().st_size > 0:
             return clean_id, cached_pdf_path
 
+        # Lookup doctor signature, photo and clinic logo from database
+        tenant_id = _resolve_tenant_id()
+        effective_logo = clinic_logo
+        effective_sig = doctor_signature
+        effective_photo = ""
+
+        doc_qual = rx.get("doctor_qualification") or ""
+        doc_reg = rx.get("doctor_reg_no") or ""
+
+        with self.session_factory() as session:
+            doc_row = session.execute(
+                select(Doctor).where(
+                    Doctor.tenant_id == tenant_id,
+                    or_(Doctor.doctor_id == rx.get("doctor_id", ""), Doctor.id == rx.get("doctor_id", "")),
+                )
+            ).scalars().first()
+            if doc_row:
+                if not effective_sig:
+                    effective_sig = doc_row.signature or ""
+                effective_photo = doc_row.photo or ""
+                if not doc_qual:
+                    doc_qual = doc_row.qualification or ""
+                if not doc_reg:
+                    doc_reg = doc_row.registration_no or ""
+
+            if not effective_logo:
+                clinic_row = session.execute(
+                    select(Clinic).where(Clinic.id == tenant_id)
+                ).scalars().first()
+                if clinic_row:
+                    effective_logo = clinic_row.logo or ""
+                    if not clinic_name or clinic_name == "Clinic":
+                        clinic_name = clinic_row.name
+
         pdf_data = PrescriptionPDFData(
             clinic_name=clinic_name,
             clinic_phone=clinic_phone,
@@ -1687,8 +1739,8 @@ class PostgresPrescriptionService:
             clinic_address=clinic_address,
             doctor_name=rx.get("doctor_name", "Doctor"),
             doctor_specialization=rx.get("doctor_specialization", "Physician"),
-            doctor_qualification=rx.get("doctor_qualification", ""),
-            doctor_reg_no=rx.get("doctor_reg_no", ""),
+            doctor_qualification=doc_qual,
+            doctor_reg_no=doc_reg,
             patient_id=rx.get("patient_id", ""),
             patient_name=rx.get("patient_name", ""),
             patient_phone=rx.get("patient_phone", ""),
@@ -1707,6 +1759,9 @@ class PostgresPrescriptionService:
             advice=rx.get("advice", ""),
             follow_up_date=rx.get("follow_up_date", ""),
             version=rx.get("version", 1),
+            clinic_logo=effective_logo or rx.get("clinic_logo", ""),
+            doctor_signature=effective_sig or rx.get("doctor_signature", "") or rx.get("Signature", ""),
+            doctor_photo=effective_photo or rx.get("doctor_photo", "") or rx.get("Photo", ""),
         )
 
         rx_num, pdf_file = generate_prescription_pdf(pdf_data, self.pdf_dir)
@@ -2212,8 +2267,146 @@ class PostgresPaymentRepository:
     def upi_id(self) -> str:
         return self._upi_id
 
-    def create_online_payment(self, amount: str) -> dict:
-        return {"success": False, "status": "NOT_IMPLEMENTED", "message": "Online payment will be available soon."}
+    def create_online_payment(
+        self,
+        amount: str,
+        clinic_name: str = "Clinic",
+        patient_name: str = "Patient",
+        patient_phone: str = "",
+        appointment_id: str = "",
+        doctor_name: str = "",
+        tenant_id: Optional[str] = None,
+        key_id: Optional[str] = None,
+        key_secret: Optional[str] = None,
+        upi_id: Optional[str] = None,
+    ) -> dict:
+        """Generate Razorpay payment link & direct UPI deep link, persisting Payment record in PostgreSQL."""
+        effective_tenant = tenant_id or _resolve_tenant_id()
+        resolved_key_id = key_id
+        resolved_key_secret = key_secret
+        resolved_upi = upi_id or self._upi_id
+
+        # Look up clinic tenant credentials if not explicitly passed
+        with self.session_factory() as session:
+            clinic = session.execute(
+                select(Clinic).where(Clinic.id == effective_tenant)
+            ).scalar_one_or_none()
+            if clinic:
+                resolved_key_id = resolved_key_id or clinic.razorpay_key_id
+                resolved_key_secret = resolved_key_secret or clinic.razorpay_key_secret
+                resolved_upi = resolved_upi or clinic.upi_id or self._upi_id
+                if not clinic_name or clinic_name == "Clinic":
+                    clinic_name = clinic.name
+
+        from ..services.razorpay_service import RazorpayService
+        razorpay_svc = RazorpayService(
+            default_key_id=resolved_key_id or "",
+            default_key_secret=resolved_key_secret or "",
+            default_upi_id=resolved_upi or "clinic@upi",
+        )
+        res = razorpay_svc.create_payment(
+            amount=amount,
+            clinic_name=clinic_name,
+            patient_name=patient_name,
+            patient_phone=patient_phone,
+            appointment_id=appointment_id,
+            doctor_name=doctor_name,
+            key_id=resolved_key_id,
+            key_secret=resolved_key_secret,
+            upi_id=resolved_upi,
+            tenant_id=effective_tenant,
+        )
+
+        # Persist to database
+        try:
+            with self.session_factory() as session:
+                # Find linked appointment if exists
+                appt_row = None
+                if appointment_id:
+                    appt_row = session.execute(
+                        select(Appointment).where(
+                            Appointment.tenant_id == effective_tenant,
+                            or_(Appointment.token_no == str(appointment_id).strip(), Appointment.id == str(appointment_id).strip()),
+                        )
+                    ).scalars().first()
+
+                payment_row = Payment(
+                    tenant_id=effective_tenant,
+                    payment_id=res["payment_id"],
+                    appointment_id=appt_row.id if appt_row else None,
+                    amount=str(res["amount"]),
+                    currency=res.get("currency", "INR"),
+                    payment_method="Razorpay / UPI",
+                    payment_status="Pending",
+                    gateway="Razorpay",
+                    gateway_payload={
+                        "payment_link_id": res.get("payment_link_id"),
+                        "short_url": res.get("short_url"),
+                        "upi_uri": res.get("upi_uri"),
+                        "key_id": resolved_key_id,
+                    },
+                )
+                session.add(payment_row)
+                session.commit()
+        except Exception as exc:
+            logger.error("Failed to persist online payment row to DB: %s", exc)
+
+        return res
+
+    def mark_payment_status(
+        self,
+        payment_id: str,
+        new_status: str = "Paid",
+        transaction_reference: str = "",
+    ) -> dict:
+        """Mark payment and linked appointment as Paid in PostgreSQL."""
+        tenant_id = _resolve_tenant_id()
+        with self.session_factory() as session:
+            pay = session.execute(
+                select(Payment).where(
+                    Payment.tenant_id == tenant_id,
+                    or_(Payment.payment_id == payment_id.strip(), Payment.id == payment_id.strip()),
+                )
+            ).scalars().first()
+
+            appt = None
+            if not pay:
+                # Try finding appointment by token_no or id
+                appt = session.execute(
+                    select(Appointment).where(
+                        Appointment.tenant_id == tenant_id,
+                        or_(Appointment.token_no == payment_id.strip(), Appointment.id == payment_id.strip()),
+                    )
+                ).scalars().first()
+                if appt:
+                    pay = session.execute(
+                        select(Payment).where(
+                            Payment.tenant_id == tenant_id,
+                            Payment.appointment_id == appt.id,
+                        )
+                    ).scalars().first()
+
+            if not pay and not appt:
+                return {"success": False, "status": "NOT_FOUND", "payment_id": payment_id}
+
+            if pay:
+                pay.payment_status = new_status
+                if transaction_reference:
+                    pay.transaction_reference = transaction_reference
+                if new_status.casefold() in ("paid", "completed", "success"):
+                    pay.paid_at = datetime.now(timezone.utc)
+
+            # Update linked appointment if present
+            if pay and pay.appointment_id and not appt:
+                appt = session.execute(select(Appointment).where(Appointment.id == pay.appointment_id)).scalar_one_or_none()
+
+            if appt:
+                appt.payment_status = new_status
+                if new_status.casefold() in ("paid", "completed", "success"):
+                    appt.status = "Confirmed"
+
+            session.commit()
+            return {"success": True, "status": new_status, "payment_id": pay.payment_id if pay else payment_id}
 
     def verify_payment_status(self, payment_id: str) -> dict:
         tenant_id = _resolve_tenant_id()
@@ -2239,7 +2432,7 @@ class PostgresPaymentRepository:
             numeric_amount = Decimal(str(amount).replace(",", "").replace("₹", "").strip())
             if numeric_amount <= 0:
                 raise InvalidOperation
-            upi_id = self._upi_id
+            upi_id = self._upi_id or "clinic@upi"
             uri = "upi://pay?" + urlencode({"pa": upi_id, "pn": clinic_name, "am": f"{numeric_amount:.2f}", "cu": "INR", "tr": reference})
             output_dir.mkdir(parents=True, exist_ok=True)
             path = output_dir / f"{reference}-upi.png"

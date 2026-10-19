@@ -429,6 +429,7 @@ class WhatsAppHandler:
             state["feature_flags"] = flags
             state["clinic_name"] = clinic_name
             state["support_phone"] = support_phone
+            state["ui"] = ""  # Reset UI for the incoming message turn
 
 
             history = list(state.get("messages", []))
@@ -451,8 +452,6 @@ class WhatsAppHandler:
                 resp_history.append({"role": "assistant", "content": response_text})
                 result["messages"] = resp_history[-12:]
 
-                self.sessions.save(session_key, result)
-
                 # Send response back to patient via WhatsApp and persist outbound record
                 await self._send_whatsapp_reply(
                     sender_phone,
@@ -463,6 +462,8 @@ class WhatsAppHandler:
                     tenant_id=tenant_id,
                     conversation_id=conv_id,
                 )
+
+                self.sessions.save(session_key, result)
             except Exception:
                 logger.exception("Failed to process WhatsApp AI message for tenant=%s", tenant_id)
                 support = self.settings.support_phone or "the clinic reception"
@@ -583,8 +584,30 @@ class WhatsAppHandler:
         res: Dict[str, Any] = {}
 
 
+        # CASE 0: Welcome / Initial Greeting interactive menu (1st time only)
+        has_active_flow = bool(state.get("appointment_step") or state.get("reschedule_step") or state.get("cancel_step"))
+        is_explicit_menu_cmd = str(state.get("user_text", "")).strip().lower() in ("menu", "/menu", "start", "/start", "help", "/help")
+        welcome_already_sent = bool(state.get("welcome_menu_sent"))
+
+        if ui == "welcome_menu" and not has_active_flow and (not welcome_already_sent or is_explicit_menu_cmd):
+            state["welcome_menu_sent"] = True
+            buttons = [
+                {"id": "btn_book_appointment", "title": "Book Appointment"[:20]},
+                {"id": "btn_clinic_info", "title": "About Hospital"[:20]},
+                {"id": "btn_my_reports", "title": "My Reports"[:20]},
+            ]
+            logger.info(">>> [OUTBOUND INTERACTIVE] Sending Welcome Greeting Menu Buttons (1st time)")
+            res = self.client.send_interactive_buttons(
+                to=recipient,
+                body=_format_whatsapp_markdown(response_text)[:1024],
+                buttons=buttons,
+                header=clinic_name[:60],
+                phone_number_id=effective_phone_id,
+            )
+            msg_type = "interactive"
+
         # CASE A: Doctor selection interactive list
-        if ui == "doctor_select" and state.get("doctor_choices"):
+        elif ui == "doctor_select" and state.get("doctor_choices"):
             choices = state.get("doctor_choices", [])
             rows = []
             for doc in choices[:10]:

@@ -67,11 +67,16 @@ class RagService:
         assert self._documents is not None
         return self._documents
 
-    def search(self, question: str) -> list[str]:
+    def search(self, question: str, limit: int = 4, k: int | None = None) -> list[str]:
         self._ensure_initialized()
         if not self._store:
             return []
-        return self._store.search(question)
+        top_k = k if k is not None else limit
+        return self._store.search(question, limit=top_k)
+
+    def get_relevant_context(self, question: str, limit: int = 3, k: int | None = None) -> str:
+        results = self.search(question, limit=limit, k=k)
+        return "\n\n".join(results)
 
     def ingest_pdf(self, path: Path) -> int:
         if not self.is_available():

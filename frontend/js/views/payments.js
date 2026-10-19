@@ -233,6 +233,7 @@ export const PaymentsView = {
           <select id="pay-select-method" class="form-select">
             <option value="Cash">Cash (Front Desk)</option>
             <option value="UPI">UPI (QR / GooglePay / PhonePe)</option>
+            <option value="Razorpay / UPI">Razorpay / UPI Online</option>
             <option value="Card">Debit / Credit Card (POS Terminal)</option>
             <option value="Net Banking">Net Banking / Transfer</option>
           </select>
@@ -247,6 +248,13 @@ export const PaymentsView = {
           <label class="form-label">Notes (Optional)</label>
           <input type="text" id="pay-input-notes" class="form-input" placeholder="e.g. Paid in full at desk" />
         </div>
+
+        <div style="margin-top: 10px; padding: 10px; background: var(--bg-surface-secondary, #f8fafc); border-radius: 6px; border: 1px dashed var(--border-light, #cbd5e1); display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 11.5px; color: var(--text-secondary);">Sandbox Online Gateway:</span>
+          <button type="button" id="sim-razorpay-btn" class="btn btn-secondary btn-sm" style="font-size: 11.5px;">
+            ⚡ Simulate Razorpay Success
+          </button>
+        </div>
       </form>
     `;
 
@@ -256,6 +264,17 @@ export const PaymentsView = {
     `;
 
     Modal.open("Record Payment Collection", bodyHtml, footerHtml);
+
+    document.getElementById("sim-razorpay-btn")?.addEventListener("click", async () => {
+      try {
+        await API.simulateRazorpayPayment(identifier);
+        showToast(`Razorpay payment simulated & verified for Token ${identifier}!`, "success");
+        Modal.close();
+        await this.loadPayments();
+      } catch (err) {
+        showToast(err.message || "Failed to simulate Razorpay payment", "error");
+      }
+    });
 
     document.getElementById("submit-record-payment-btn")?.addEventListener("click", async () => {
       const amount = document.getElementById("pay-input-amount")?.value?.trim();

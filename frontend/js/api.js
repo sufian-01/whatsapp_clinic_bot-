@@ -526,5 +526,41 @@ export const API = {
       body: { recipient_email: recipientEmail, recipient_type: recipientType },
     });
   },
+
+  async getClinicSettings() {
+    return request("/settings");
+  },
+
+  async updateClinicSettings(payload) {
+    return request("/settings", {
+      method: "PUT",
+      body: payload,
+    });
+  },
+
+  async getDoctorProfile() {
+    return request("/doctor/profile");
+  },
+
+  async updateDoctorProfile(payload) {
+    return request("/doctor/profile", {
+      method: "PUT",
+      body: payload,
+    });
+  },
+
+  async verifyRazorpayPayment(payload) {
+    return request("/payments/razorpay/verify", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  async simulateRazorpayPayment(paymentId) {
+    return request(`/payments/${encodeURIComponent(paymentId)}/simulate-razorpay-success`, {
+      method: "POST",
+    });
+  },
 };
+
 

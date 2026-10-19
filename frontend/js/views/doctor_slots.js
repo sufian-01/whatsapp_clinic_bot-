@@ -317,17 +317,24 @@ export const DoctorSlotsView = {
           </div>
 
           <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:8px;">
-            <button type="button" class="btn btn-secondary" onclick="document.getElementById('app-modal-close-btn').click()">Cancel</button>
+            <button type="button" class="btn btn-secondary" id="doc-add-slot-cancel-btn">Cancel</button>
             <button type="submit" id="new-slot-submit-btn" class="btn btn-primary">Create Slot</button>
           </div>
         </form>
       `,
     });
 
+    document.getElementById("doc-add-slot-cancel-btn")?.addEventListener("click", () => {
+      Modal.close();
+    });
+
     document.getElementById("doc-add-slot-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const submitBtn = document.getElementById("new-slot-submit-btn");
-      if (submitBtn) submitBtn.disabled = true;
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Creating...";
+      }
 
       const dateVal = document.getElementById("new-slot-date").value;
       const startTime = document.getElementById("new-slot-start").value.trim();
@@ -341,11 +348,14 @@ export const DoctorSlotsView = {
         });
         showToast("Slot created successfully!", "success");
         Modal.close();
-        this.loadData();
+        await this.loadData();
       } catch (err) {
         showToast(err.message || "Failed to create slot.", "error");
       } finally {
-        if (submitBtn) submitBtn.disabled = false;
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Create Slot";
+        }
       }
     });
   },

@@ -40,6 +40,7 @@ class GraphState(TypedDict, total=False):
     preferred_language: str
     voice_replies: bool
     ui: str
+    welcome_menu_sent: bool
     response: str
     # Reschedule and Cancel states
     reschedule_step: str

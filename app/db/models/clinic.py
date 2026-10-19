@@ -26,7 +26,7 @@ class Clinic(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     legal_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    logo: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    logo: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     website: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -34,6 +34,8 @@ class Clinic(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     timezone: Mapped[str] = mapped_column(String(50), default="Asia/Kolkata", nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="INR", nullable=False)
     upi_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    razorpay_key_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    razorpay_key_secret: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="ACTIVE", nullable=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     working_days: Mapped[Optional[str]] = mapped_column(String(255), default="Monday - Friday", nullable=True)

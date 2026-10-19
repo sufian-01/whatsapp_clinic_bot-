@@ -30,7 +30,7 @@
     <!-- Persistent Sidebar Navigation -->
     <aside id="app-sidebar" class="sidebar">
       <div class="sidebar-header">
-        <div class="brand-icon">⚕</div>
+        <div class="brand-icon" id="sidebar-brand-icon">⚕</div>
         <div class="brand-info">
           <span class="brand-title" id="header-clinic-name">Clinic Assistant</span>
           <span class="brand-subtitle" id="header-portal-label">Admin CRM</span>
@@ -124,6 +124,10 @@
           </a>
 
           <div class="nav-section-title" style="margin-top: 10px;">Account</div>
+          <a href="#settings" class="nav-item" data-view="settings">
+            <span class="nav-icon">⚙️</span>
+            <span>Settings</span>
+          </a>
           <button id="doctor-change-password-nav-btn" class="nav-item" style="width: 100%; background: none; border: none; text-align: left; cursor: pointer; font-family: inherit; color: var(--text-secondary);">
             <span class="nav-icon">🔑</span>
             <span>Change Password</span>
@@ -210,7 +214,7 @@
   <div id="toast-container" class="toast-container"></div>
 
   <!-- Main Modular Application Bootstrap -->
-  <script type="module" src="js/app.js"></script>
+  <script type="module" src="js/app.js?v=2.4"></script>
 </body>
 </html>
 

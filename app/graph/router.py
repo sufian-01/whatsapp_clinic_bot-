@@ -15,8 +15,28 @@ _SPECIALIZATION_TERMS = (
 )
 
 
+def _has_doctor_term(text: str) -> bool:
+    """Return True only if a standalone doctor/physician/specialist term is present."""
+    import re
+    return bool(re.search(r"\b(doctor|doctors|dr|dr\.|physician|gynecologist|cardiologist|pediatrician|dermatologist|orthopedic|specialist)\b", text.lower()))
+
+
 def classify_intent(state: dict) -> dict:
     text = state.get("user_text", "").lower()
+    clean_text = text.strip()
+
+    # 0. Interactive button quick action IDs
+    if clean_text in ("btn_book_appointment", "📅 book appointment", "book appointment"):
+        return {**state, "intent": "appointment_booking"}
+    if clean_text in ("btn_clinic_info", "🏥 about hospital", "about hospital", "about clinic"):
+        return {**state, "intent": "clinic_information"}
+    if clean_text in ("btn_my_reports", "📄 my reports", "my reports", "my reports / rx"):
+        return {**state, "intent": "report_enquiry"}
+
+    # Standalone greeting (only when not in an active booking/reschedule/cancel flow)
+    if _is_greeting(clean_text) and not state.get("appointment_step") and not state.get("reschedule_step") and not state.get("cancel_step"):
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'greeting'", text)
+        return {**state, "intent": "greeting"}
 
     # 1. Human support request
     if any(term in text for term in ("human", "real person", "support", "contact someone", "talk to someone", "human agent", "customer care")):
@@ -32,13 +52,31 @@ def classify_intent(state: dict) -> dict:
     if state.get("cancel_step"):
         return {**state, "intent": "appointment_cancel"}
     if state.get("appointment_step") and state.get("appointment_step") != "complete":
-        # Check if user explicitly switched to cancel, reschedule, or unrelated clinic info
+        # Check if user explicitly switched to cancel, reschedule, or unrelated clinic/doctor info
         if _is_cancel_query(text) and any(w in text for w in ("booking", "appointment", "token", "tkn", "meri", "my")):
             return {**state, "intent": "appointment_cancel"}
         if _is_reschedule_query(text) and any(w in text for w in ("booking", "appointment", "token", "tkn", "meri", "my")):
             return {**state, "intent": "appointment_reschedule"}
-        is_clinic_info = any(term in text for term in ("hours", "timing", "address", "where", "location", "kahan"))
-        if is_clinic_info and not any(term in text for term in ("doctor", "dr", "@")) and state.get("appointment_step") != "doctor":
+        # If at email step and providing email address, stay in appointment_flow
+        if state.get("appointment_step") == "email" and any(term in text for term in ("@", ".com", ".in", ".org")):
+            return {**state, "intent": "appointment_flow"}
+
+        # If at phone step and providing phone number with >= 5 digits, stay in appointment_flow
+        import re
+        if state.get("appointment_step") == "phone" and len(re.sub(r"\D", "", text)) >= 5:
+            return {**state, "intent": "appointment_flow"}
+
+        # Check if user is asking a clinic or doctor side-question during booking
+        is_clinic_info = any(term in text for term in (
+            "hours", "timing", "timings", "samay", "kab khulta", "khula", "band",
+            "address", "where", "location", "kahan", "kaha", "kidhar", "pata", "jagah",
+            "fee", "fees", "cost", "price", "charge", "charges", "kitna", "kitne", "rate", "paisa", "rupaye",
+            "parking", "service", "services", "facility", "facilities", "qualification",
+            "insurance", "mediclaim", "ayushman", "contact"
+        ))
+        if is_clinic_info:
+            if _has_doctor_term(text):
+                return {**state, "intent": "doctor_information"}
             return {**state, "intent": "clinic_information"}
         return {**state, "intent": "appointment_flow"}
 
@@ -68,7 +106,7 @@ def classify_intent(state: dict) -> dict:
         return {**state, "intent": "appointment_booking"}
 
     # 10. Doctor information lookup
-    if any(term in text for term in ("doctor", "doctors", "dr", "dr.", "physician", "gynecologist", "specialist")):
+    if _has_doctor_term(text):
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'doctor_information'", text)
         return {**state, "intent": "doctor_information"}
 
@@ -263,5 +301,30 @@ def _is_doctor_list_query(text: str) -> bool:
     return False
 
 
+def _is_greeting(text: str) -> bool:
+    """True if user input is an initial greeting or conversation opener without a specific query."""
+    import re
+    lowered = text.casefold().strip()
+    if not lowered:
+        return False
+    # If booking, reschedule, cancel, doctor, or info query, not a standalone greeting
+    excluded = (
+        "book", "booking", "appointment", "appoinment", "cancel", "reschedule",
+        "doctor", "dr", "timing", "fee", "fees", "report", "slot", "token", "tkn",
+        "pain", "fever", "ill", "sick", "problem", "dawa", "medicine"
+    )
+    if any(k in lowered for k in excluded):
+        return False
+    greeting_tokens = {
+        "hi", "hii", "hiii", "hello", "helloo", "hey", "heyy", "namaste", "namaskar",
+        "salam", "salaam", "pranam", "start", "menu", "options", "shuru", "halo",
+    }
+    words = set(re.findall(r"\b\w+\b", lowered))
+    if words and words.issubset(greeting_tokens):
+        return True
+    return lowered in greeting_tokens
+
+
 def route_intent(state: dict) -> str:
     return state.get("intent", "other_help")
+
