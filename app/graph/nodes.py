@@ -93,7 +93,7 @@ class GraphNodes:
 
     def classify(self, state: GraphState) -> GraphState:
         from .router import classify_intent
-        return classify_intent(state)
+        return classify_intent(state, llm=self._llm)
 
     # ------------------------------------------------------------------
     # retrieve  (RAG)

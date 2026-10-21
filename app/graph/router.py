@@ -1,6 +1,7 @@
 """Routing helpers for the conversational graph."""
 
 import logging
+from typing import Any, Optional
 from ..tools.doctors import match_health_concern, resolve_specialization
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,11 @@ def _is_draft_cancel_or_rejection(text: str) -> bool:
     return False
 
 
-def classify_intent(state: dict) -> dict:
+def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
     text = state.get("user_text", "").lower()
     clean_text = text.strip()
 
-    # 0. Interactive button quick action IDs
+    # 0. Interactive button quick action IDs (instant 0ms)
     if clean_text in ("btn_book_appointment", "📅 book appointment", "book appointment"):
         return {**state, "intent": "appointment_booking"}
     if clean_text in ("btn_clinic_info", "🏥 about hospital", "about hospital", "about clinic"):
@@ -78,11 +79,78 @@ def classify_intent(state: dict) -> dict:
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_cancel'", text)
         return {**state, "intent": "appointment_cancel"}
 
-    # 3. Human support request
+    # 3. Fast direct field validations (avoid unnecessary LLM calls for obvious answers)
+    curr_step = state.get("appointment_step")
+    import re
+    if curr_step == "phone" and len(re.sub(r"\D", "", clean_text)) >= 7:
+        return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "phone"}
+    if curr_step == "email" and ("@" in clean_text or clean_text == "skip"):
+        return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "email"}
+    if curr_step in ("slot", "pre_patient_slot") and (clean_text.startswith("slot:") or clean_text.isdigit()):
+        return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": curr_step}
+
+    # 4. AI-First Semantic Intent Classifier (Gemini LLM)
+    from ..core.feature_flags import is_feature_enabled, FEATURE_AI_AGENT
+    if llm and is_feature_enabled(state.get("feature_flags", {}), FEATURE_AI_AGENT, default=True):
+        from ..llm.classifier import classify_with_ai
+        ai_res = classify_with_ai(
+            llm=llm,
+            user_text=state.get("user_text", ""),
+            active_flow=state.get("active_flow") or ("appointment_booking" if curr_step else None),
+            current_step=curr_step,
+            history=state.get("messages", []),
+        )
+        if ai_res and ai_res.get("intent"):
+            ai_intent = ai_res["intent"]
+            is_canc = ai_res.get("is_cancellation", False)
+            is_side_q = ai_res.get("is_side_question", False)
+
+            if is_canc or ai_intent == "appointment_draft_cancel":
+                if curr_step or state.get("active_flow") == "appointment_booking":
+                    return {**state, "intent": "appointment_draft_cancel", "interruption_type": "cancellation"}
+                return {**state, "intent": "appointment_cancel"}
+
+            if is_side_q or (curr_step and ai_intent in ("doctor_list", "doctor_information", "clinic_information")):
+                resume_ctx = {
+                    "flow": "appointment_booking",
+                    "pending_field": curr_step,
+                    "interrupted_at_step": curr_step,
+                }
+                return {
+                    **state,
+                    "intent": ai_intent,
+                    "interruption_type": "side_question",
+                    "resume_context": resume_ctx,
+                    "active_flow": "appointment_booking",
+                }
+
+            if ai_intent == "appointment_flow":
+                return {
+                    **state,
+                    "intent": "appointment_flow",
+                    "active_flow": "appointment_booking",
+                    "pending_field": curr_step,
+                }
+
+            if ai_intent == "appointment_booking":
+                if curr_step and curr_step != "complete":
+                    return {
+                        **state,
+                        "intent": "appointment_flow",
+                        "active_flow": "appointment_booking",
+                        "pending_field": curr_step,
+                    }
+                return {**state, "intent": "appointment_booking"}
+
+            if ai_intent in ("doctor_list", "doctor_information", "clinic_information", "patient_appointments", "report_enquiry", "human_support", "greeting", "appointment_reschedule", "appointment_cancel", "other_help"):
+                return {**state, "intent": ai_intent}
+
+    # 5. Deterministic Rule-Based Fallback (zero LLM token mode or offline fallback)
+    # Human support request
     if any(term in text for term in ("human", "real person", "support", "contact someone", "talk to someone", "human agent", "customer care")):
         return {**state, "intent": "human_support"}
 
-    # 4. Lab / report enquiry
+    # Lab / report enquiry
     if any(term in text for term in ("report", "test result", "lab result")) or "report ke baare mein" in text:
         if state.get("appointment_step"):
             return {
@@ -94,12 +162,12 @@ def classify_intent(state: dict) -> dict:
             }
         return {**state, "intent": "report_enquiry"}
 
-    # 5. Check upcoming appointments or timing of booked visit
+    # Check upcoming appointments or timing of booked visit
     if _is_my_appointments_query(text) or _is_existing_appointment_query(text):
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments'", text)
         return {**state, "intent": "patient_appointments", "appointment_step": "complete"}
 
-    # 6. Reschedule intent
+    # Reschedule intent
     if _is_reschedule_query(text):
         return {**state, "intent": "appointment_reschedule"}
 
