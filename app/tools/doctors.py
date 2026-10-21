@@ -251,7 +251,7 @@ class DoctorDirectory:
                 return [dict(d) for d in self._cached_doctors]
 
             try:
-                rows = self._read_rows()
+                rows = self._read_rows() if callable(self._read_rows) else self._read_rows
             except Exception:
                 return [dict(d) for d in self._cached_doctors] if self._cached_doctors is not None else []
 
@@ -259,6 +259,24 @@ class DoctorDirectory:
                 self._cached_doctors = []
                 self._cache_time = now
                 return []
+
+            if isinstance(rows[0], dict):
+                doctors = [
+                    {
+                        "Doctor ID": d.get("Doctor ID") or d.get("doctor_id") or "",
+                        "Doctor Name": d.get("Doctor Name") or d.get("name") or "",
+                        "Specialization": d.get("Specialization") or d.get("specialization") or "",
+                        "Consultation Fee": str(d.get("Consultation Fee") or d.get("consultation_fee") or ""),
+                        "Available Days": d.get("Available Days") or d.get("available_days") or "",
+                        "Start Time": d.get("Start Time") or d.get("start_time") or "",
+                        "End Time": d.get("End Time") or d.get("end_time") or "",
+                        "Status": d.get("Status") or d.get("status") or "Active",
+                    }
+                    for d in rows
+                ]
+                self._cached_doctors = doctors
+                self._cache_time = now
+                return [dict(d) for d in doctors]
 
             headers = [h.strip() for h in rows[0]]
             doctors = [

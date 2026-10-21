@@ -1,5 +1,6 @@
-"""Build the clinic conversation graph."""
+"""Build the clinic conversation graph with deterministic threading and checkpoints."""
 
+import re
 import uuid
 from typing import Any, Optional
 from langgraph.checkpoint.memory import MemorySaver
@@ -9,11 +10,25 @@ from .nodes import GraphNodes
 from .state import GraphState
 
 
+def build_whatsapp_thread_id(clinic_id: str, phone: str) -> str:
+    """Generate deterministic LangGraph thread_id for multi-tenant isolation.
+    
+    Format: clinic:{clinic_id}:whatsapp:{phone_e164}
+    Guarantees that conversations for the same patient across different clinics never leak,
+    and same patient within the same clinic preserves state deterministically.
+    """
+    cid = str(clinic_id or "default").strip()
+    clean_phone = re.sub(r"[^\d+]", "", str(phone or "").strip())
+    if not clean_phone:
+        clean_phone = "anonymous"
+    return f"clinic:{cid}:whatsapp:{clean_phone}"
+
+
 class CheckpointedGraph:
     """Runnable wrapper providing automatic thread_id configuration for checkpointers.
     
     Ensures that multi-turn conversations retain LangGraph checkpoints across turns
-    keyed by tenant and patient phone/chat_id, while also gracefully handling one-shot calls.
+    keyed by tenant and patient phone, while also gracefully handling one-shot calls.
     """
 
     def __init__(self, inner: Any, checkpointer: Optional[Any] = None) -> None:
@@ -28,11 +43,9 @@ class CheckpointedGraph:
         configurable = dict(cfg.get("configurable", {}))
 
         if "thread_id" not in configurable:
-            tid = state.get("chat_id") or state.get("phone") or state.get("patient_phone")
-            if not tid:
-                tid = f"thread_{uuid.uuid4().hex[:10]}"
-                state["chat_id"] = tid
-            configurable["thread_id"] = str(tid)
+            cid = state.get("tenant_id") or state.get("clinic_id") or "default"
+            phone = state.get("phone") or state.get("patient_phone") or state.get("chat_id")
+            configurable["thread_id"] = build_whatsapp_thread_id(cid, phone)
 
         cfg["configurable"] = configurable
         return self._inner.invoke(state, config=cfg, **kwargs)
@@ -49,6 +62,7 @@ def build_graph(nodes: GraphNodes, checkpointer: Optional[Any] = None) -> Checkp
     graph.add_node("doctor_list", nodes.doctor_list_node)
     graph.add_node("appointment_start", nodes.appointment_start)
     graph.add_node("appointment_progress", nodes.appointment_progress)
+    graph.add_node("appointment_draft_cancel", nodes.appointment_draft_cancel)
     graph.add_node("appointment_reschedule", nodes.reschedule_node)
     graph.add_node("appointment_cancel", nodes.cancel_node)
     graph.add_node("patient_appointments", nodes.my_appointments_node)
@@ -64,6 +78,7 @@ def build_graph(nodes: GraphNodes, checkpointer: Optional[Any] = None) -> Checkp
         "doctor_list": "doctor_list",
         "appointment_booking": "appointment_start",
         "appointment_flow": "appointment_progress",
+        "appointment_draft_cancel": "appointment_draft_cancel",
         "appointment_reschedule": "appointment_reschedule",
         "appointment_cancel": "appointment_cancel",
         "patient_appointments": "patient_appointments",
@@ -76,6 +91,7 @@ def build_graph(nodes: GraphNodes, checkpointer: Optional[Any] = None) -> Checkp
     graph.add_edge("doctor_list", END)
     graph.add_edge("appointment_start", END)
     graph.add_edge("appointment_progress", END)
+    graph.add_edge("appointment_draft_cancel", END)
     graph.add_edge("appointment_reschedule", END)
     graph.add_edge("appointment_cancel", END)
     graph.add_edge("patient_appointments", END)

@@ -121,15 +121,24 @@ class GraphNodes:
             return {**state, "doctor_context": []}
         text = state.get("user_text", "")
         matches = self._doctors.get_doctors()
+        found_specific = False
         for doctor in matches:
             name = doctor.get("Doctor Name", "")
             if name and name.casefold() in text.casefold():
                 matches = self._doctors.get_doctor_by_name(name)
+                found_specific = True
                 break
-        for specialization in ("gynecologist", "physician", "specialist"):
-            if specialization in text.casefold():
-                matches = self._doctors.get_doctors_by_specialization(specialization)
-                break
+        if not found_specific and state.get("doctor_name"):
+            name = state.get("doctor_name")
+            matched = self._doctors.get_doctor_by_name(name)
+            if matched:
+                matches = matched
+                found_specific = True
+        if not found_specific:
+            for specialization in ("gynecologist", "physician", "specialist"):
+                if specialization in text.casefold():
+                    matches = self._doctors.get_doctors_by_specialization(specialization)
+                    break
         return {**state, "doctor_context": matches}
 
     # ------------------------------------------------------------------
@@ -478,11 +487,28 @@ class GraphNodes:
                     }
 
         # 5. If a doctor was matched (either directly or uniquely by specialty)
+        draft = dict(state.get("appointment_draft") or {})
+        draft["tenant_id"] = state.get("tenant_id", "default")
         if matched_doctor:
             if not matched_doctor.get("Consultation Fee", ""):
                 return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
-            selected = {**state, **self._doctor_details(matched_doctor), **extra, "appointment_step": "pre_patient_date", "doctor_choices": [], "ui": ""}
+            draft["doctor_id"] = matched_doctor.get("Doctor ID", "")
+            draft["doctor_name"] = matched_doctor.get("Doctor Name", "")
+            draft["specialization"] = matched_doctor.get("Specialization", "")
+            draft["consultation_fee"] = matched_doctor.get("Consultation Fee", "500")
+            selected = {
+                **state,
+                **self._doctor_details(matched_doctor),
+                **extra,
+                "active_flow": "appointment_booking",
+                "appointment_draft": draft,
+                "appointment_step": "pre_patient_date",
+                "doctor_choices": [],
+                "ui": "",
+            }
             res = self._show_doctor_availability(selected, matched_doctor, requested_date=extracted_date)
+            res["active_flow"] = "appointment_booking"
+            res["appointment_draft"] = draft
             if any(w in text.lower() for w in ("sufian", "sufiyan", "sufan")) and "sufian" not in matched_doctor.get("Doctor Name", "").lower():
                 res["response"] = f"Dr. Sufian is not on our panel, but we have {matched_doctor.get('Doctor Name')} ({matched_doctor.get('Specialization')}).\n\n{res['response']}"
             return res
@@ -491,9 +517,29 @@ class GraphNodes:
         selected_doc = self._selected_doctor(state)
         if selected_doc:
             doc_name = selected_doc.get("Doctor Name", "")
-            return {**state, **extra, "appointment_step": "name", "ui": "", "response": f"Sure, booking an appointment with Dr. {doc_name}. May I know your name?"}
+            draft["doctor_id"] = selected_doc.get("Doctor ID", "")
+            draft["doctor_name"] = doc_name
+            return {
+                **state,
+                **extra,
+                "active_flow": "appointment_booking",
+                "appointment_draft": draft,
+                "appointment_step": "name",
+                "pending_field": "name",
+                "ui": "",
+                "response": f"Sure, booking an appointment with Dr. {doc_name}. May I know your name?",
+            }
 
-        return {**state, **extra, "appointment_step": "name", "ui": "", "response": "Sure. May I know your name?"}
+        return {
+            **state,
+            **extra,
+            "active_flow": "appointment_booking",
+            "appointment_draft": draft,
+            "appointment_step": "name",
+            "pending_field": "name",
+            "ui": "",
+            "response": "Sure. May I know your name?",
+        }
 
     # ------------------------------------------------------------------
     # appointment_progress
@@ -522,6 +568,12 @@ class GraphNodes:
                 "response": "Appointment booking cancelled. How else can I assist you today?"
             }
 
+        # Guard: If user provides or selects a doctor at any point during active booking
+        if self._doctors:
+            doc_resolution = self._doctors.resolve_doctor(text)
+            if doc_resolution.get("status") == "matched":
+                return self._accept_doctor(state, doc_resolution["doctor"])
+
         if step == "name":
             cleaned = text.strip()
             lowered = cleaned.casefold()
@@ -532,7 +584,18 @@ class GraphNodes:
                 if _is_hindi_or_hinglish(cleaned):
                     return {**state, "ui": "", "response": "Kripya patient ka poora naam share karein (jaise 'Rahul Sharma') jinke liye appointment book karni hai."}
                 return {**state, "ui": "", "response": "Please provide the patient's full name to continue with the appointment."}
-            return {**state, "patient_name": cleaned, "appointment_step": "email", "ui": "", "response": "What email address should receive the invoice?"}
+            draft = dict(state.get("appointment_draft") or {})
+            draft["patient_name"] = cleaned
+            return {
+                **state,
+                "patient_name": cleaned,
+                "appointment_draft": draft,
+                "active_flow": "appointment_booking",
+                "pending_field": "doctor" if not state.get("doctor_name") else "email",
+                "appointment_step": "email",
+                "ui": "",
+                "response": "What email address should receive the invoice?",
+            }
 
         if step == "email":
             lowered = text.casefold()
@@ -801,16 +864,29 @@ class GraphNodes:
         amount = doctor.get("Consultation Fee", "")
         if not amount:
             return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
+        draft = dict(state.get("appointment_draft") or {})
+        draft["doctor_id"] = doctor.get("Doctor ID", "")
+        draft["doctor_name"] = doctor.get("Doctor Name", "")
+        draft["doctor_specialization"] = doctor.get("Specialization", "")
         selected = {
             **state,
             **self._doctor_details(doctor),
+            "active_flow": "appointment_booking",
+            "appointment_draft": draft,
             "appointment_step": "date",
+            "pending_field": "date",
             "doctor_choices": [],
             "doctor_fuzzy_candidate": {},
             "ui": "",
         }
         if hasattr(self._slots, "get_upcoming_available_slots"):
-            return self._show_doctor_availability(selected, doctor)
+            res = self._show_doctor_availability(selected, doctor)
+            res["active_flow"] = "appointment_booking"
+            res["appointment_draft"] = draft
+            res["doctor_name"] = doctor.get("Doctor Name", "")
+            res["appointment_step"] = "date"
+            res["pending_field"] = "date"
+            return res
         # Compatibility for existing lightweight slot adapters. Production
         # uses AppointmentTools, which implements the availability query.
         return {**selected, "response": "What date would you prefer? Please use YYYY-MM-DD."}
@@ -1184,10 +1260,28 @@ class GraphNodes:
         support_phone = state.get("support_phone") or self._support_phone
         if state.get("intent") == "doctor_information" and not state.get("doctor_context"):
             return {**state, "response": "I couldn't verify doctor information right now. Please contact the clinic team at " + support_phone + "."}
-        context = state.get("clinic_context", [])
+        context = list(state.get("clinic_context", []))
         context += ["Structured doctor record: " + ", ".join(f"{key}={value}" for key, value in doctor.items()) for doctor in state.get("doctor_context", [])]
+        if state.get("conversation_summary"):
+            context.append(f"Previous conversation summary:\n{state['conversation_summary']}")
+        if state.get("patient_name"):
+            context.append(f"Patient name: {state['patient_name']}")
+
+        history = state.get("messages", [])
         try:
-            response = self._llm.answer(load_system_prompt(clinic_name, support_phone), state.get("user_text", ""), context)
+            try:
+                response = self._llm.answer(
+                    load_system_prompt(clinic_name, support_phone),
+                    state.get("user_text", ""),
+                    context,
+                    history=history,
+                )
+            except TypeError:
+                response = self._llm.answer(
+                    load_system_prompt(clinic_name, support_phone),
+                    state.get("user_text", ""),
+                    context,
+                )
         except Exception:
             logger.exception("Gemini completion failed")
             response = "I'm sorry, I'm unable to answer right now. Please try again shortly."
@@ -1195,26 +1289,32 @@ class GraphNodes:
 
         # If user asked a side question mid-booking, add continuation reminder
         active_step = state.get("appointment_step")
+        resume_ctx = state.get("resume_context")
+        pending_target = (resume_ctx.get("pending_field") if resume_ctx else None) or active_step
+
         if active_step and active_step != "complete":
             doc_name = state.get("doctor_name", "")
             doc_hint = f" with Dr. {doc_name}" if doc_name else ""
             step_prompt_hi = "Kripya apna agla detail batayein."
             step_prompt_en = "Please continue whenever you are ready."
-            if active_step == "doctor":
+            if pending_target == "doctor":
                 step_prompt_hi = "Aap kis doctor ke sath appointment book karna chahte hain?"
                 step_prompt_en = "Which doctor would you like to consult?"
-            elif active_step == "phone":
+            elif pending_target == "phone":
                 step_prompt_hi = "Kripya apna 10-digit mobile number share karein."
                 step_prompt_en = "Please share your 10-digit mobile number."
-            elif active_step == "name":
+            elif pending_target == "name":
                 step_prompt_hi = "Kripya patient ka poora naam share karein."
                 step_prompt_en = "Please share the patient's full name."
-            elif active_step in {"date", "pre_patient_date"}:
+            elif pending_target in {"date", "pre_patient_date"}:
                 step_prompt_hi = "Kripya apni preferred date batayein."
                 step_prompt_en = "Please provide your preferred appointment date."
-            elif active_step in {"slot", "pre_patient_slot"}:
+            elif pending_target in {"slot", "pre_patient_slot"}:
                 step_prompt_hi = "Kripya apna preferred time slot select karein."
                 step_prompt_en = "Please select your preferred time slot."
+            elif pending_target == "email":
+                step_prompt_hi = "Kripya confirmation ke liye apna email address share karein (ya 'skip' likhein)."
+                step_prompt_en = "Please provide your email address, or type 'skip'."
 
             if _is_hindi_or_hinglish(state.get("user_text", "")):
                 reminder = f"\n\n*(Aapka appointment booking{doc_hint} chalu hai. {step_prompt_hi})*"
@@ -1581,6 +1681,31 @@ class GraphNodes:
             "upcoming_appointments": appts,
             "ui": "select_appointment",
             "response": "You have multiple upcoming appointments. Please select the one you wish to reschedule:",
+        }
+
+    def appointment_draft_cancel(self, state: GraphState) -> GraphState:
+        """Cancel active in-progress appointment booking draft and clear workflow state."""
+        logger.info("[APPOINTMENT DRAFT CANCEL] Clearing in-progress appointment draft.")
+        is_hindi = _is_hindi_or_hinglish(state.get("user_text", ""))
+        if is_hindi:
+            msg = "Theek hai, maine aapki appointment booking request cancel kar di hai. Agar aapko clinic, doctors ya timings ke baare mein kuch poochna ho, to batayein! 😊"
+        else:
+            msg = "No problem! I have cancelled your appointment booking request. Feel free to ask about our clinic, doctors, or timings whenever you are ready! 😊"
+
+        return {
+            **state,
+            "active_flow": None,
+            "appointment_step": "",
+            "pending_field": None,
+            "appointment_draft": {},
+            "resume_context": None,
+            "doctor_id": "",
+            "doctor_name": "",
+            "appointment_date": "",
+            "appointment_time": "",
+            "slot_id": "",
+            "response": msg,
+            "ui": "",
         }
 
     def cancel_node(self, state: GraphState) -> GraphState:

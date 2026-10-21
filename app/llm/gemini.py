@@ -1,6 +1,7 @@
 """Gemini adapter with a small interface for testing and future providers."""
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Optional
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
@@ -15,12 +16,30 @@ class GeminiClient:
         self._model_name = target_model
         self._model = ChatGoogleGenerativeAI(model=self._model_name, google_api_key=api_key, temperature=0)
 
-    def answer(self, system_prompt: str, user_text: str, context: list[str]) -> str:
+    def answer(
+        self,
+        system_prompt: str,
+        user_text: str,
+        context: list[str],
+        history: Optional[list[dict[str, str]]] = None,
+    ) -> str:
         context_text = "\n\n".join(context) or "No clinic-specific context was found."
         messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Clinic context:\n{context_text}\n\nUser: {user_text}"),
+            SystemMessage(content=f"{system_prompt}\n\nClinic context:\n{context_text}"),
         ]
+        if history:
+            for turn in history[-6:]:
+                role = (turn.get("role") or "").strip().lower()
+                content = turn.get("content") or ""
+                if not content:
+                    continue
+                if role in ("assistant", "bot", "model"):
+                    messages.append(AIMessage(content=content))
+                elif role in ("user", "human"):
+                    messages.append(HumanMessage(content=content))
+
+        messages.append(HumanMessage(content=user_text))
+
         try:
             response = self._model.invoke(messages)
             return str(response.content)

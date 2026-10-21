@@ -16,6 +16,7 @@ from .api.knowledge import create_knowledge_router
 from .core.auth import get_current_admin
 from .core.config import get_settings, validate_settings
 from .core.logging import configure_logging
+from .graph.checkpoint import get_graph_checkpointer
 from .graph.graph import build_graph
 from .graph.nodes import GraphNodes
 from .llm.gemini import GeminiClient
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
         allow_demo_password=settings.allow_demo_password,
     )
 
+    graph_checkpointer = get_graph_checkpointer(settings.database_url)
     graph = build_graph(GraphNodes(
         settings.clinic_name,
         llm,
@@ -175,7 +177,7 @@ def create_app() -> FastAPI:
         gmail=gmail_tools,
         clinic_timezone=settings.clinic_timezone,
         crm_service=crm_service,
-    ))
+    ), checkpointer=graph_checkpointer)
     sarvam = SarvamService.from_settings(settings)
 
     @asynccontextmanager

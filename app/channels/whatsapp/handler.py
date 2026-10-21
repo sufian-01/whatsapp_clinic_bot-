@@ -37,6 +37,8 @@ from ...core.feature_flags import (
 )
 from ...core.tenant import tenant_scope
 from ...core.sessions import SessionStore
+from ...core.concurrency import get_thread_lock_manager
+from ...graph.graph import build_whatsapp_thread_id
 from .client import MetaWhatsAppClient, normalize_phone_number
 from .models import WhatsAppMessage, WhatsAppValue
 
@@ -417,84 +419,123 @@ class WhatsAppHandler:
         if not user_input:
             return
 
-        # Execute shared LangGraph flow inside tenant context
-        with tenant_scope(tenant_id):
-            session_key = f"wa:{tenant_id}:{sender_phone}"
-            state = self.sessions.get(session_key)
-            state["chat_id"] = session_key
-            state["user_text"] = user_input
-            state["channel"] = "whatsapp"
-            state["phone"] = sender_phone
-            if not state.get("patient_phone"):
-                state["patient_phone"] = sender_phone
-            state["tenant_id"] = tenant_id
-            state["feature_flags"] = flags
-            state["clinic_name"] = clinic_name
-            state["support_phone"] = support_phone
-            state["ui"] = ""  # Reset UI for the incoming message turn
+        # Execute shared LangGraph flow inside tenant context with deterministic thread locking
+        thread_id = build_whatsapp_thread_id(tenant_id, sender_phone)
+        legacy_session_key = f"wa:{tenant_id}:{sender_phone}"
+        lock_mgr = get_thread_lock_manager()
+        thread_lock = await lock_mgr.get_lock(thread_id)
 
-            history = list(state.get("messages", []))
-            history.append({"role": "user", "content": user_input})
-            state["messages"] = history[-12:]
+        async with thread_lock:
+            with tenant_scope(tenant_id):
+                state = self.sessions.get(thread_id)
+                if not state or not state.get("phone"):
+                    legacy_state = self.sessions.get(legacy_session_key)
+                    if legacy_state and legacy_state.get("phone"):
+                        state = legacy_state
+                state["chat_id"] = thread_id
+                state["thread_id"] = thread_id
+                state["user_text"] = user_input
+                state["channel"] = "whatsapp"
+                state["phone"] = sender_phone
+                if not state.get("patient_phone"):
+                    state["patient_phone"] = sender_phone
+                state["tenant_id"] = tenant_id
+                state["clinic_id"] = tenant_id
+                state["feature_flags"] = flags
+                state["clinic_name"] = clinic_name
+                state["support_phone"] = support_phone
+                state["last_processed_message_id"] = msg_id
+                state["ui"] = ""  # Reset UI for the incoming message turn
 
-            try:
-                # Invoke LangGraph with thread_id for checkpointer
-                logger.info("[WHATSAPP AGENT] processing started (thread_id=%s)", session_key)
-                config = {"configurable": {"thread_id": session_key}}
+                history = list(state.get("messages", []))
+                history.append({"role": "user", "content": user_input})
+                # Bounded short-term memory management & summarization
+                if len(history) > 10:
+                    older = history[:-6]
+                    recent = history[-6:]
+                    old_summary = state.get("conversation_summary", "")
+                    summary_chunks = [f"{m.get('role', 'user')}: {m.get('content', '')[:120]}" for m in older]
+                    combined_summary = (old_summary + "\n" if old_summary else "") + "\n".join(summary_chunks)
+                    if len(combined_summary) > 600:
+                        combined_summary = combined_summary[-600:]
+                    state["conversation_summary"] = combined_summary.strip()
+                    state["messages"] = recent
+                else:
+                    state["messages"] = history[-10:]
+
                 try:
-                    result = await asyncio.to_thread(self.graph.invoke, state, config=config)
-                except TypeError:
-                    result = await asyncio.to_thread(self.graph.invoke, state)
-
-                response_text = result.get("response", "")
-                if not response_text:
-                    response_text = "I have received your request. How else can I assist you with your clinic visit?"
-
-                logger.info("[WHATSAPP AGENT] agent response=%s", response_text)
-
-                # Append to history
-                resp_history = list(result.get("messages", state["messages"]))
-                resp_history.append({"role": "assistant", "content": response_text})
-                result["messages"] = resp_history[-12:]
-
-                # Send response back to patient via WhatsApp and persist outbound record
-                await self._send_whatsapp_reply(
-                    sender_phone,
-                    response_text,
-                    result,
-                    phone_number_id,
-                    is_voice=is_voice_inbound,
-                    tenant_id=tenant_id,
-                    conversation_id=conv_id,
-                )
-
-                self.sessions.save(session_key, result)
-            except Exception:
-                logger.exception("Failed to process WhatsApp AI message for tenant=%s", tenant_id)
-                support = self.settings.support_phone or "the clinic reception"
-                err_reply = (
-                    "I apologize, but I am temporarily unable to complete your request. "
-                    f"Please try again shortly or contact our clinic directly at {support}."
-                )
-                res = self.client.send_text(sender_phone, err_reply, phone_number_id=phone_number_id)
-                if self.repository:
+                    # Invoke LangGraph with deterministic thread_id for checkpointer
+                    logger.info(
+                        "[WHATSAPP AGENT] processing started | thread_id=%s clinic=%s phone_hash=%s msg_id=%s",
+                        thread_id,
+                        tenant_id,
+                        hashlib.sha256(sender_phone.encode()).hexdigest()[:8],
+                        msg_id[:16],
+                    )
+                    config = {"configurable": {"thread_id": thread_id}}
                     try:
-                        out_wamid = (
-                            res.get("data", {}).get("messages", [{}])[0].get("id")
-                            if res and res.get("data") else None
-                        )
-                        self.repository.record_outbound_message(
-                            tenant_id=tenant_id,
-                            conversation_id=conv_id,
-                            whatsapp_message_id=out_wamid,
-                            phone_number=sender_phone,
-                            message_type="text",
-                            body=err_reply,
-                            status="sent" if res.get("success") else "failed",
-                            raw_payload=json.dumps(res) if res else None,
-                        )
-                    except Exception:
-                        pass
+                        result = await asyncio.to_thread(self.graph.invoke, state, config=config)
+                    except TypeError:
+                        result = await asyncio.to_thread(self.graph.invoke, state)
+
+                    response_text = result.get("response", "")
+                    if not response_text:
+                        response_text = "I have received your request. How else can I assist you with your clinic visit?"
+
+                    logger.info(
+                        "[WHATSAPP AGENT] agent response generated | thread_id=%s response_len=%d",
+                        thread_id,
+                        len(response_text),
+                    )
+
+                    # Append to history
+                    resp_history = list(result.get("messages", state["messages"]))
+                    resp_history.append({"role": "assistant", "content": response_text})
+                    result["messages"] = resp_history[-10:]
+
+                    # Send response back to patient via WhatsApp and persist outbound record
+                    await self._send_whatsapp_reply(
+                        sender_phone,
+                        response_text,
+                        result,
+                        phone_number_id,
+                        is_voice=is_voice_inbound,
+                        tenant_id=tenant_id,
+                        conversation_id=conv_id,
+                    )
+
+                    self.sessions.save(thread_id, result)
+                    self.sessions.save(legacy_session_key, result)
+                except Exception:
+                    logger.exception(
+                        "Failed to process WhatsApp AI message for thread_id=%s tenant=%s",
+                        thread_id,
+                        tenant_id,
+                    )
+                    support = self.settings.support_phone or "the clinic reception"
+                    err_reply = (
+                        "I apologize, but I am temporarily unable to complete your request. "
+                        f"Please try again shortly or contact our clinic directly at {support}."
+                    )
+                    res = self.client.send_text(sender_phone, err_reply, phone_number_id=phone_number_id)
+                    if self.repository:
+                        try:
+                            out_wamid = (
+                                res.get("data", {}).get("messages", [{}])[0].get("id")
+                                if res and res.get("data") else None
+                            )
+                            self.repository.record_outbound_message(
+                                tenant_id=tenant_id,
+                                conversation_id=conv_id,
+                                whatsapp_message_id=out_wamid,
+                                phone_number=sender_phone,
+                                message_type="text",
+                                body=err_reply,
+                                status="sent" if res.get("success") else "failed",
+                                raw_payload=json.dumps(res) if res else None,
+                            )
+                        except Exception:
+                            pass
 
     def _extract_message_text(self, message: WhatsAppMessage) -> tuple[str, bool]:
         """Extract user prompt from various WhatsApp message types."""

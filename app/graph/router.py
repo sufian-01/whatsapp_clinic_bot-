@@ -52,37 +52,82 @@ def classify_intent(state: dict) -> dict:
     if state.get("cancel_step"):
         return {**state, "intent": "appointment_cancel"}
     if state.get("appointment_step") and state.get("appointment_step") != "complete":
-        # Check if user explicitly stated an existing booking or asked about their visit timing
+        # 1. Check if user wants to cancel / abandon the in-progress booking draft
+        is_draft_cancel = any(phrase in text for phrase in (
+            "rehne do", "rehne de", "nahi chahiye", "nahi karna", "mat karo", "chhod do",
+            "cancel booking", "cancel appointment", "cancel draft", "cancel kar", "stop", "abort",
+            "appointment nahi", "nahi leni", "don't want", "no appointment", "nahi chahiye appointment",
+            "nahi karwana", "nahi book karna", "khatam karo", "band karo"
+        )) or clean_text in ("cancel", "nahi", "no", "stop", "exit", "quit")
+        if is_draft_cancel:
+            logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_draft_cancel'", text)
+            return {
+                **state,
+                "intent": "appointment_draft_cancel",
+                "interruption_type": "cancellation",
+            }
+
+        # 2. Check if user explicitly switched to another service (like report enquiry)
+        if any(term in text for term in ("report", "test result", "lab result")) or "report ke baare mein" in text:
+            logger.info("[ROUTER] User text: '%s' -> Interrupted booking for report_enquiry", text)
+            return {
+                **state,
+                "intent": "report_enquiry",
+                "interruption_type": "unrelated",
+                "appointment_step": "complete",
+                "active_flow": None,
+            }
+
+        # 3. Check if user inquired about an existing booking / timing
         if _is_existing_appointment_query(text):
             logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments' (Interrupting active booking)", text)
             return {**state, "intent": "patient_appointments", "appointment_step": "complete"}
-        # Check if user explicitly switched to cancel, reschedule, or unrelated clinic/doctor info
-        if _is_cancel_query(text) and any(w in text for w in ("booking", "appointment", "token", "tkn", "meri", "my")):
-            return {**state, "intent": "appointment_cancel"}
-        if _is_reschedule_query(text) and any(w in text for w in ("booking", "appointment", "token", "tkn", "meri", "my")):
-            return {**state, "intent": "appointment_reschedule"}
-        # If at email step and providing email address, stay in appointment_flow
-        if state.get("appointment_step") == "email" and any(term in text for term in ("@", ".com", ".in", ".org")):
-            return {**state, "intent": "appointment_flow"}
 
-        # If at phone step and providing phone number with >= 5 digits, stay in appointment_flow
+        # 4. If at email step and providing email address or skip, stay in appointment_flow
+        if state.get("appointment_step") == "email" and any(term in text for term in ("@", ".com", ".in", ".org", "skip")):
+            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "email"}
+
+        # 5. If at phone step and providing phone number with >= 5 digits, stay in appointment_flow
         import re
         if state.get("appointment_step") == "phone" and len(re.sub(r"\D", "", text)) >= 5:
-            return {**state, "intent": "appointment_flow"}
+            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "phone"}
 
-        # Check if user is asking a clinic or doctor side-question during booking
+        # 6. Check if user is asking a clinic or doctor side-question during booking
         is_clinic_info = any(term in text for term in (
             "hours", "timing", "timings", "samay", "kab khulta", "khula", "band",
             "address", "where", "location", "kahan", "kaha", "kidhar", "pata", "jagah",
             "fee", "fees", "cost", "price", "charge", "charges", "kitna", "kitne", "rate", "paisa", "rupaye",
             "parking", "service", "services", "facility", "facilities", "qualification",
-            "insurance", "mediclaim", "ayushman", "contact"
+            "insurance", "mediclaim", "ayushman", "contact", "kaun"
         ))
         if is_clinic_info:
+            current_step = state.get("appointment_step")
+            resume_ctx = {
+                "flow": "appointment_booking",
+                "pending_field": current_step,
+                "interrupted_at_step": current_step,
+            }
             if _has_doctor_term(text):
-                return {**state, "intent": "doctor_information"}
-            return {**state, "intent": "clinic_information"}
-        return {**state, "intent": "appointment_flow"}
+                return {
+                    **state,
+                    "intent": "doctor_information",
+                    "interruption_type": "side_question",
+                    "resume_context": resume_ctx,
+                    "active_flow": "appointment_booking",
+                }
+            return {
+                **state,
+                "intent": "clinic_information",
+                "interruption_type": "side_question",
+                "resume_context": resume_ctx,
+                "active_flow": "appointment_booking",
+            }
+        return {
+            **state,
+            "intent": "appointment_flow",
+            "active_flow": "appointment_booking",
+            "pending_field": state.get("appointment_step"),
+        }
 
     # 4. Reschedule intent
     if _is_reschedule_query(text):
@@ -227,10 +272,13 @@ def _is_cancel_query(text: str) -> bool:
 
 def _is_clinic_hours_query(text: str) -> bool:
     """True if user asks general clinic hours/timing rather than their personal appointment time."""
+    import re
     lowered = text.casefold()
     if any(p in lowered for p in ("mera", "meri", "mujhe", "my", "appointment", "appoinment", "token", "tkn")):
         return False
-    if any(w in lowered for w in ("clinic timing", "hospital timing", "kab khulta", "kab band", "opening time", "closing time", "clinic time", "hospital time")):
+    if re.search(r"\b(clinic|hospital|dispensary)\b.*\b(timing|timings|time|hours|samay|open|opening|close|closing|khul|band)\b", lowered):
+        return True
+    if any(w in lowered for w in ("clinic timing", "clinic timings", "hospital timing", "hospital timings", "kab khulta", "kab band", "opening time", "closing time", "clinic time", "hospital time", "clinic hours")):
         return True
     return False
 
