@@ -50,7 +50,7 @@ mkdir -p /app/data/tenants /app/data/knowledge /app/data/vectorstore /app/data/p
 # 3. Start Uvicorn application server
 PORT="${PORT:-8000}"
 HOST="${HOST:-0.0.0.0}"
-WORKERS="${WORKERS:-2}"
+WORKERS="${WORKERS:-1}"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 
 echo "[STARTUP] Launching Uvicorn server on ${HOST}:${PORT} (workers=${WORKERS}, log_level=${LOG_LEVEL})..."

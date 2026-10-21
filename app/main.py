@@ -1,6 +1,7 @@
 """FastAPI application factory."""
 
 from collections import deque
+from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 import time
@@ -20,6 +21,7 @@ from .graph.nodes import GraphNodes
 from .llm.gemini import GeminiClient
 from .rag.service import RagService
 from .services.crm_service import CrmService
+from .services.keep_alive_service import get_keep_alive_stats, start_keep_alive, stop_keep_alive
 from .services.sarvam_service import SarvamService
 from .tools.appointments import AppointmentTools
 from .tools.doctors import DoctorDirectory, DoctorTools
@@ -176,7 +178,15 @@ def create_app() -> FastAPI:
     ))
     sarvam = SarvamService.from_settings(settings)
 
-    app = FastAPI(title=f"{settings.clinic_name} AI Assistant & CRM")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup: Launch Render keep-alive anti-sleep worker if enabled/configured
+        start_keep_alive()
+        yield
+        # Shutdown: Gracefully stop background workers
+        stop_keep_alive()
+
+    app = FastAPI(title=f"{settings.clinic_name} AI Assistant & CRM", lifespan=lifespan)
 
     perf_logger = logging.getLogger("crm.perf")
     perf_history = deque(maxlen=200)
@@ -270,6 +280,10 @@ def create_app() -> FastAPI:
     # 4. Mount CRM & Super Admin Frontend static files
     frontend_dir = ROOT_DIR / "frontend"
     if frontend_dir.exists():
+        @app.get("/", include_in_schema=False)
+        async def root_redirect():
+            return RedirectResponse(url="/admin/")
+
         @app.get("/admin", include_in_schema=False)
         async def admin_redirect():
             return RedirectResponse(url="/admin/")
@@ -296,6 +310,7 @@ def create_app() -> FastAPI:
                 "uptime_seconds": round(time.time() - app_start_time, 1),
                 "clinic": settings.clinic_name,
                 "rag_available": rag.is_available(),
+                "keep_alive": get_keep_alive_stats(),
             })
             if is_db_configured():
                 try:

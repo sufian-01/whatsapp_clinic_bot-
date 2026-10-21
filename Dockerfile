@@ -44,7 +44,7 @@ EXPOSE 8000
 
 # Healthcheck against /health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f "http://localhost:${PORT:-8000}/health" || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 

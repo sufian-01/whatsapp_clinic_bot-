@@ -1,0 +1,85 @@
+# ==============================================================================
+# Render.com Infrastructure Blueprint
+# Auto-deploys:
+#   1. Managed PostgreSQL Database (Free tier)
+#   2. Production Docker Web Service (FastAPI + LangGraph + Meta WhatsApp + CRMs)
+# ==============================================================================
+
+databases:
+  - name: clinic-postgres
+    databaseName: telegram_bot
+    user: postgres
+    plan: free
+    region: singapore
+
+services:
+  - type: web
+    name: clinic-ai-platform
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      # Database connection auto-linked from the clinic-postgres database
+      - key: DATABASE_URL
+        fromDatabase:
+          name: clinic-postgres
+          property: connectionString
+
+      # Server runtime configuration
+      - key: PORT
+        value: 8000
+      - key: WORKERS
+        value: 1
+      - key: LOG_LEVEL
+        value: info
+      - key: APP_ENV
+        value: production
+
+      # Clinic platform defaults
+      - key: CLINIC_NAME
+        value: XYZ Hospital & Clinic
+      - key: CLINIC_SUPPORT_PHONE
+        value: 6200126662
+      - key: CLINIC_TIMEZONE
+        value: Asia/Kolkata
+
+      # Security & Admin credentials (auto-generated if left blank)
+      - key: SUPER_ADMIN_USERNAME
+        value: superadmin
+      - key: SUPER_ADMIN_PASSWORD
+        generateValue: true
+      - key: CRM_ADMIN_USERNAME
+        value: admin
+      - key: CRM_ADMIN_PASSWORD
+        generateValue: true
+      - key: CRM_SECRET_KEY
+        generateValue: true
+
+      # Anti-Sleep Keep-Alive Configuration (Pings /health every 10 mins)
+      - key: KEEP_ALIVE_ENABLED
+        value: "true"
+      - key: KEEP_ALIVE_INTERVAL_MINUTES
+        value: "10"
+
+      # AI & Meta WhatsApp Channel (Prompts for keys during deployment)
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: WHATSAPP_ENABLED
+        value: "true"
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        value: kodnexus_verify_2026
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_DEFAULT_COUNTRY_CODE
+        value: "91"
+
