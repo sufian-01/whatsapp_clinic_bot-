@@ -8,12 +8,26 @@ class GeminiClient:
     def __init__(self, api_key: str, model: str) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required")
-        self._model = ChatGoogleGenerativeAI(model=model, google_api_key=api_key, temperature=0)
+        target_model = model or "gemini-2.5-flash"
+        if target_model in ("gemini-2.0-flash", "gemini-1.5-flash"):
+            target_model = "gemini-2.5-flash"
+        self._api_key = api_key
+        self._model_name = target_model
+        self._model = ChatGoogleGenerativeAI(model=self._model_name, google_api_key=api_key, temperature=0)
 
     def answer(self, system_prompt: str, user_text: str, context: list[str]) -> str:
         context_text = "\n\n".join(context) or "No clinic-specific context was found."
-        response = self._model.invoke([
+        messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"Clinic context:\n{context_text}\n\nUser: {user_text}"),
-        ])
-        return str(response.content)
+        ]
+        try:
+            response = self._model.invoke(messages)
+            return str(response.content)
+        except Exception as e:
+            if "NOT_FOUND" in str(e) and self._model_name != "gemini-2.5-flash":
+                self._model_name = "gemini-2.5-flash"
+                self._model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=self._api_key, temperature=0)
+                response = self._model.invoke(messages)
+                return str(response.content)
+            raise

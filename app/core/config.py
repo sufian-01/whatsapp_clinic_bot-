@@ -101,7 +101,7 @@ def get_settings() -> Settings:
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", os.getenv("BOT_TOKEN", "")),
         telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
         gemini_api_key=os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         telegram_webhook_url=os.getenv("TELEGRAM_WEBHOOK_URL", ""),
         knowledge_dir=ROOT_DIR / "data" / "knowledge",
         vectorstore_dir=ROOT_DIR / "data" / "vectorstore",

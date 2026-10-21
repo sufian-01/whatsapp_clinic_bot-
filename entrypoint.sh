@@ -40,6 +40,11 @@ EOF
     alembic upgrade head || {
         echo "[STARTUP] Warning: Alembic migrations encountered an issue. Continuing server startup..."
     }
+
+    echo "[STARTUP] Seeding initial clinic dataset and verifying admin accounts..."
+    python app/scripts/seed_initial_data.py || {
+        echo "[STARTUP] Warning: Initial data seed encountered an issue. Continuing server startup..."
+    }
 else
     echo "[STARTUP] Running in standalone local storage mode (no PostgreSQL DATABASE_URL detected)."
 fi
