@@ -103,11 +103,13 @@ def classify_with_ai(
                 HumanMessage(content=user_text),
             ]
             resp = llm.invoke(msgs)
-            raw_response = getattr(resp, "content", str(resp))
+            raw_response = getattr(resp, "content", resp)
         else:
             return None
 
-        data = _extract_json_payload(raw_response)
+        from .gemini import extract_text_from_content
+        text_payload = extract_text_from_content(raw_response)
+        data = _extract_json_payload(text_payload)
         if isinstance(data, dict) and data.get("intent"):
             logger.info(
                 "[AI INTENT CLASSIFIER] Text=%r -> Intent=%s (cancel=%s, side_q=%s, spec=%s)",
@@ -122,3 +124,4 @@ def classify_with_ai(
     except Exception as exc:
         logger.warning("[AI INTENT CLASSIFIER] Failed to classify via LLM (%s), using rule fallback.", exc)
         return None
+

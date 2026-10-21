@@ -1286,23 +1286,38 @@ class GraphNodes:
             context.append(f"Patient name: {state['patient_name']}")
 
         history = state.get("messages", [])
+        user_msg = state.get("user_text", "")
+        is_greeting = state.get("intent") == "greeting" or (
+            user_msg.strip().lower() in ("hi", "hii", "hello", "hey", "namaste", "hola", "salam")
+            and not state.get("appointment_step")
+        )
+
         try:
             try:
                 response = self._llm.answer(
                     load_system_prompt(clinic_name, support_phone),
-                    state.get("user_text", ""),
+                    user_msg,
                     context,
                     history=history,
                 )
             except TypeError:
                 response = self._llm.answer(
                     load_system_prompt(clinic_name, support_phone),
-                    state.get("user_text", ""),
+                    user_msg,
                     context,
                 )
         except Exception:
             logger.exception("Gemini completion failed")
-            response = "I'm sorry, I'm unable to answer right now. Please try again shortly."
+            if is_greeting:
+                if _is_hindi_or_hinglish(user_msg):
+                    response = f"Namaste! {clinic_name} mein aapka swagat hai. Main aapki kya sahayata kar sakta hoon?\n\nAap appointment book kar sakte hain, doctor timings dekh sakte hain, ya clinic services ke baare mein pooch sakte hain."
+                else:
+                    response = f"Hello! Welcome to {clinic_name}. How can I assist you today?\n\nYou can book an appointment, check doctor timings, or enquire about our clinic services."
+            else:
+                if _is_hindi_or_hinglish(user_msg):
+                    response = f"{clinic_name} mein aapka swagat hai. Appointment book karne ke liye 'Book appointment' likhein ya clinic helpline par direct call karein: {support_phone}."
+                else:
+                    response = f"Welcome to {clinic_name}. To book an appointment, reply with 'Book appointment' or call our clinic helpline at {support_phone}."
         logger.info("Gemini response generated")
 
         # If user asked a side question mid-booking, add continuation reminder
@@ -1341,12 +1356,8 @@ class GraphNodes:
             response = response + reminder
 
         # If intent is greeting, attach welcome_menu for interactive quick buttons (1st time only)
-        is_greeting = state.get("intent") == "greeting" or (
-            state.get("user_text", "").strip().lower() in ("hi", "hii", "hello", "hey", "namaste")
-            and not state.get("appointment_step")
-        )
         is_first_greeting = is_greeting and not state.get("welcome_menu_sent")
-        extra_ui = {"ui": "welcome_menu"} if (is_first_greeting and "unable to answer right now" not in response) else {"ui": ""}
+        extra_ui = {"ui": "welcome_menu"} if is_first_greeting else {"ui": ""}
 
         return {**state, **extra_ui, "response": response}
 

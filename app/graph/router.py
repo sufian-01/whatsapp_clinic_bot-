@@ -82,12 +82,41 @@ def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
     # 3. Fast direct field validations (avoid unnecessary LLM calls for obvious answers)
     curr_step = state.get("appointment_step")
     import re
+    if curr_step == "doctor":
+        is_side_info = any(term in text for term in (
+            "hours", "timing", "timings", "samay", "kab khulta", "khula", "band",
+            "address", "where", "location", "kahan", "kaha", "kidhar", "pata", "jagah",
+            "fee", "fees", "cost", "price", "charge", "charges", "kitna", "kitne", "rate", "paisa", "rupaye",
+            "parking", "service", "services", "facility", "facilities", "qualification",
+            "insurance", "mediclaim", "ayushman", "contact"
+        )) or _is_clinic_hours_query(text)
+        if not is_side_info and not _is_draft_cancel_or_rejection(text):
+            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "doctor"}
     if curr_step == "phone" and len(re.sub(r"\D", "", clean_text)) >= 7:
         return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "phone"}
     if curr_step == "email" and ("@" in clean_text or clean_text == "skip"):
         return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "email"}
     if curr_step in ("slot", "pre_patient_slot") and (clean_text.startswith("slot:") or clean_text.isdigit()):
         return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": curr_step}
+    if curr_step == "name":
+        lowered_txt = text.strip()
+        is_q = "?" in lowered_txt or any(w in lowered_txt.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what", "kab", "kitne", "kahan", "batao", "btao"))
+        has_info = any(term in text for term in ("hours", "timing", "address", "fee", "fees", "cost", "parking"))
+        if not is_q and not has_info and not _is_doctor_list_query(text) and not _is_draft_cancel_or_rejection(text):
+            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "name"}
+
+    # Deterministic 0ms queries when not in flow (saves LLM tokens and quota)
+    if not curr_step and not state.get("reschedule_step") and not state.get("cancel_step"):
+        if _is_booking_query(text) and not _is_doctor_list_query(text):
+            logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_booking' (deterministic)", text)
+            return {**state, "intent": "appointment_booking"}
+        if (
+            _is_doctor_list_query(text)
+            or match_health_concern(text)[0] is not None
+            or resolve_specialization(text) is not None
+        ):
+            logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'doctor_list' (deterministic)", text)
+            return {**state, "intent": "doctor_list"}
 
     # 4. AI-First Semantic Intent Classifier (Gemini LLM)
     from ..core.feature_flags import is_feature_enabled, FEATURE_AI_AGENT
