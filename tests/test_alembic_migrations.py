@@ -39,3 +39,4 @@ def test_alembic_upgrade_head_and_columns():
                 os.remove(db_path)
         except OSError:
             pass
+

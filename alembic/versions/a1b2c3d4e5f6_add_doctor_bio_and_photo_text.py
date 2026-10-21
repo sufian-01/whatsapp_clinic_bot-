@@ -36,3 +36,4 @@ def downgrade() -> None:
     with op.batch_alter_table('doctors', schema=None) as batch_op:
         batch_op.alter_column('photo', existing_type=sa.Text(), type_=sa.String(length=500), nullable=True)
         batch_op.drop_column('bio')
+

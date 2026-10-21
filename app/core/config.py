@@ -138,7 +138,7 @@ def get_settings() -> Settings:
         whatsapp_phone_number_id=os.getenv("WHATSAPP_PHONE_NUMBER_ID", ""),
         whatsapp_business_account_id=os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", ""),
         whatsapp_app_secret=os.getenv("WHATSAPP_APP_SECRET", ""),
-        whatsapp_verify_token=os.getenv("WHATSAPP_VERIFY_TOKEN", ""),
+        whatsapp_verify_token=os.getenv("WHATSAPP_VERIFY_TOKEN", os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "kodnexus_verify_2026")),
         whatsapp_webhook_url=os.getenv("WHATSAPP_WEBHOOK_URL", ""),
         whatsapp_default_country_code=os.getenv("WHATSAPP_DEFAULT_COUNTRY_CODE", "91"),
         whatsapp_tenant_phone_map=os.getenv("WHATSAPP_TENANT_PHONE_MAP", "{}"),
