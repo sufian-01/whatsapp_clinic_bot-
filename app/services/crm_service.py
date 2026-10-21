@@ -999,14 +999,25 @@ class CrmService:
         today = today_str or datetime.now(self._get_tz()).date().isoformat()
         records = self.patients.list_patients() if self.patients else []
         query = phone_or_id.strip().casefold()
+        q_digits = "".join(filter(str.isdigit, query))
 
         upcoming = []
         for r in records:
             pid = r.get("Patient ID", "").strip().casefold()
             phone = r.get("Phone", "").strip().casefold()
+            p_digits = "".join(filter(str.isdigit, phone))
             token = r.get("Token No", "").strip().casefold()
+            name = r.get("Name", "").strip().casefold()
 
-            if query not in (pid, phone, token):
+            matched = False
+            if query and query in (pid, phone, token):
+                matched = True
+            elif q_digits and p_digits and (q_digits == p_digits or q_digits.endswith(p_digits) or p_digits.endswith(q_digits)):
+                matched = True
+            elif len(query) >= 3 and (query in name or name in query):
+                matched = True
+
+            if not matched:
                 continue
 
             appt_date = r.get("Appointment Date", "").strip()

@@ -425,21 +425,26 @@ class WhatsAppHandler:
             state["user_text"] = user_input
             state["channel"] = "whatsapp"
             state["phone"] = sender_phone
+            if not state.get("patient_phone"):
+                state["patient_phone"] = sender_phone
             state["tenant_id"] = tenant_id
             state["feature_flags"] = flags
             state["clinic_name"] = clinic_name
             state["support_phone"] = support_phone
             state["ui"] = ""  # Reset UI for the incoming message turn
 
-
             history = list(state.get("messages", []))
             history.append({"role": "user", "content": user_input})
             state["messages"] = history[-12:]
 
             try:
-                # Invoke LangGraph
-                logger.info("[WHATSAPP AGENT] processing started")
-                result = await asyncio.to_thread(self.graph.invoke, state)
+                # Invoke LangGraph with thread_id for checkpointer
+                logger.info("[WHATSAPP AGENT] processing started (thread_id=%s)", session_key)
+                config = {"configurable": {"thread_id": session_key}}
+                try:
+                    result = await asyncio.to_thread(self.graph.invoke, state, config=config)
+                except TypeError:
+                    result = await asyncio.to_thread(self.graph.invoke, state)
 
                 response_text = result.get("response", "")
                 if not response_text:

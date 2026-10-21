@@ -428,6 +428,11 @@ class GraphNodes:
         text = state.get("user_text", "")
         logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_start' (Booking Initiated) | text=%r", text)
 
+        from .router import _is_existing_appointment_query
+        if _is_existing_appointment_query(text):
+            logger.info("appointment_start redirected: query is for existing appointment/timing")
+            return self.my_appointments_node(state)
+
         # 1. Parse date if provided in text (e.g. '15 tarikh oct', 'tomorrow', 'kal', '20 October')
         parsed_date_info = parse_date_from_text(text, self._clinic_today())
         extracted_date = parsed_date_info["date"] if parsed_date_info.get("success") else None
@@ -499,22 +504,50 @@ class GraphNodes:
         text = state.get("user_text", "").strip()
         logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_progress' (Step: %s) | text=%r", step, text)
 
+        from .router import _is_existing_appointment_query
+        # Guard: If user is asking about their existing appointment or arrival timing
+        if _is_existing_appointment_query(text) or any(phrase in text.casefold() for phrase in (
+            "book kr chuka", "book kar chuka", "book kiya tha", "book kia tha", "already booked", "already book",
+            "booking ho chuki", "booking ho gayi", "appointment ho gaya", "kitne bje aana", "kab aana",
+        )):
+            logger.info("Interrupting appointment_progress: user inquired about existing booking/timing")
+            return self.my_appointments_node({**state, "appointment_step": "complete"})
+
+        # Guard: If user wants to exit / cancel booking flow
+        if text.casefold() in ("cancel", "exit", "stop", "quit", "band karo", "nahi chahiye", "rehne do", "khatam karo"):
+            return {
+                **state,
+                "appointment_step": "",
+                "ui": "main",
+                "response": "Appointment booking cancelled. How else can I assist you today?"
+            }
+
         if step == "name":
             cleaned = text.strip()
             lowered = cleaned.casefold()
-            is_question = "?" in cleaned or any(w in lowered.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what"))
+            is_question = "?" in cleaned or any(w in lowered.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what", "kab", "kitne"))
             is_greeting = lowered in {"hi", "hello", "hey", "hii", "namaste"}
-            if is_question or is_greeting or len(cleaned) < 2:
+            is_booking_phrase = any(w in lowered for w in ("book", "appointment", "appoinment", "doctor", "dr", "chahiye", "karo", "chuka"))
+            if is_question or is_greeting or is_booking_phrase or len(cleaned) < 2:
                 if _is_hindi_or_hinglish(cleaned):
-                    return {**state, "ui": "", "response": "Kripya patient ka poora naam share karein jinke liye appointment book karni hai."}
+                    return {**state, "ui": "", "response": "Kripya patient ka poora naam share karein (jaise 'Rahul Sharma') jinke liye appointment book karni hai."}
                 return {**state, "ui": "", "response": "Please provide the patient's full name to continue with the appointment."}
             return {**state, "patient_name": cleaned, "appointment_step": "email", "ui": "", "response": "What email address should receive the invoice?"}
 
         if step == "email":
+            lowered = text.casefold()
+            if any(w in lowered for w in ("skip", "nahi", "no", "nahi hai", "no email", "dont have", "baad me", "later", "nhi hai", "pata nahi")):
+                return {
+                    **state,
+                    "patient_email": "patient@clinic.local",
+                    "appointment_step": "phone",
+                    "ui": "",
+                    "response": "Sure! What phone number should we use for your appointment updates?"
+                }
             if "@" not in text or "." not in text:
                 if _is_hindi_or_hinglish(text):
-                    return {**state, "ui": "", "response": "Kripya ek valid email address share karein (jaise patient@example.com)."}
-                return {**state, "ui": "", "response": "Please provide a valid email address."}
+                    return {**state, "ui": "", "response": "Kripya ek valid email address share karein (jaise patient@example.com), ya 'skip' likhein."}
+                return {**state, "ui": "", "response": "Please provide a valid email address, or type 'skip' if you don't have an email."}
             return {**state, "patient_email": text.strip(), "appointment_step": "phone", "ui": "", "response": "What phone number should we use?"}
 
         if step == "phone":
@@ -895,7 +928,41 @@ class GraphNodes:
             except Exception:
                 logger.exception("Invoice email delivery failed after appointment confirmation")
         response = f"Appointment confirmed.\n\nToken: {token_no}\nDoctor: {state['doctor_name']}\nDate: {state['appointment_date']}\nTime: {state['appointment_time']}\nAmount: {state['amount']}\nPayment: Pay at Clinic\nInvoice: {'sent to your email' if email_sent else 'generated; email delivery failed'}"
-        return {**state, "token_no": token_no, "payment_method": "Offline", "payment_status": "Pending", "booking_status": "Confirmed", "invoice_number": invoice_number, "invoice_path": str(invoice_path), "email_sent": email_sent, "appointment_step": "complete", "ui": "main", "response": response}
+        last_booked = {
+            "token_no": token_no,
+            "appointment_id": token_no,
+            "doctor_name": state["doctor_name"],
+            "doctor": state["doctor_name"],
+            "appointment_date": state["appointment_date"],
+            "date": state["appointment_date"],
+            "appointment_time": state["appointment_time"],
+            "time": state["appointment_time"],
+            "patient_name": pat_name,
+            "name": pat_name,
+            "patient_phone": pat_phone,
+            "phone": pat_phone,
+            "patient_email": pat_email,
+            "amount": state["amount"],
+            "payment_method": "Offline (Pay at Clinic)",
+            "payment_status": "Pending",
+            "booking_status": "Confirmed",
+            "status": "Confirmed",
+        }
+        return {
+            **state,
+            "token_no": token_no,
+            "payment_method": "Offline",
+            "payment_status": "Pending",
+            "booking_status": "Confirmed",
+            "invoice_number": invoice_number,
+            "invoice_path": str(invoice_path),
+            "email_sent": email_sent,
+            "appointment_step": "complete",
+            "last_booked_appointment": last_booked,
+            "recent_context": {"last_action": "booking_confirmed", "appointment": last_booked},
+            "ui": "main",
+            "response": response,
+        }
 
     def _complete_online(self, state: GraphState) -> GraphState:
         if state.get("token_no") and state.get("booking_status") == "Confirmed" and state.get("payment_url"):
@@ -983,6 +1050,29 @@ class GraphNodes:
             f"_(Payment complete hone ke baad clinic verification auto-update ho jayega. Aap clinic par cash se bhi pay kar sakte hain.)*"
         )
 
+        last_booked = {
+            "token_no": token_no,
+            "appointment_id": token_no,
+            "doctor_name": doc_name,
+            "doctor": doc_name,
+            "appointment_date": appt_date,
+            "date": appt_date,
+            "appointment_time": appt_time,
+            "time": appt_time,
+            "patient_name": pat_name,
+            "name": pat_name,
+            "patient_phone": pat_phone,
+            "phone": pat_phone,
+            "patient_email": pat_email,
+            "amount": amt,
+            "payment_method": "Razorpay / UPI",
+            "payment_status": "Pending",
+            "booking_status": "Confirmed",
+            "status": "Confirmed",
+            "payment_url": pay_url,
+            "upi_id": upi_id,
+        }
+
         return {
             **state,
             "flow": "complete",
@@ -997,6 +1087,8 @@ class GraphNodes:
             "payment_method": "Razorpay / UPI",
             "payment_status": "Pending",
             "booking_status": "Confirmed",
+            "last_booked_appointment": last_booked,
+            "recent_context": {"last_action": "booking_confirmed", "appointment": last_booked},
             "response": response_msg,
             "reply": response_msg,
         }
@@ -1171,18 +1263,25 @@ class GraphNodes:
         return None
 
     def _find_patient_appointments(self, state: GraphState, text: str = "") -> tuple[list[dict], str | None]:
-        """Find upcoming appointments for patient by text, token, phone, or patient ID."""
+        """Find upcoming appointments for patient by text, token, phone, name, or patient ID."""
         ident = self._extract_identifier_from_text(text) if text else None
+        if not ident and text and state.get("reschedule_step") == "ask_identifier":
+            ident = text.strip()
         if not ident:
             ident = (
                 state.get("reschedule_appointment_id")
                 or state.get("cancel_appointment_id")
                 or state.get("token_no")
                 or state.get("patient_phone")
+                or state.get("phone")
+                or state.get("patient_name")
                 or state.get("patient_id")
             )
         if not ident:
             return [], None
+
+        if self._crm is None:
+            return [], ident
 
         appts = self._crm.get_patient_upcoming_appointments(
             phone_or_id=ident,
@@ -1676,33 +1775,109 @@ class GraphNodes:
 
     def my_appointments_node(self, state: GraphState) -> GraphState:
         text = state.get("user_text", "").strip()
+        last_booked = state.get("last_booked_appointment")
+
+        # 1. If we have a recently booked appointment in state/memory
+        # and user is asking timing or confirmation of their booking
+        is_timing_query = any(w in text.casefold() for w in ("kitne bje", "kitne baje", "kab aana", "kis time", "time kya", "timing", "samay", "when should i come", "what time", "arrival", "pahunchna"))
+        is_recent_booking_query = any(w in text.casefold() for w in ("book kia", "book kiya", "book kr chuka", "already booked", "booking ho chuki", "appointment book", "appointment liya", "booking already"))
+
+        if last_booked and (is_timing_query or is_recent_booking_query or not text):
+            doc = last_booked.get("doctor_name") or last_booked.get("doctor") or "Doctor"
+            date_str = last_booked.get("appointment_date") or last_booked.get("date") or ""
+            time_str = last_booked.get("appointment_time") or last_booked.get("time") or ""
+            tok = last_booked.get("token_no") or last_booked.get("appointment_id") or ""
+            pname = last_booked.get("patient_name") or last_booked.get("name") or "Patient"
+
+            if is_timing_query:
+                response = (
+                    f"Ji! Aapka appointment Dr. {doc} ke saath scheduled hai:\n\n"
+                    f"📅 *Date:* {date_str}\n"
+                    f"⏰ *Time:* {time_str}\n"
+                    f"🎫 *Token Number:* {tok}\n"
+                    f"👤 *Patient Name:* {pname}\n\n"
+                    f"ℹ️ *Reporting Time:* Kripya appointment time ({time_str}) se 10-15 minute pehle reception par report karein."
+                )
+            else:
+                response = (
+                    f"Ji haan, aapka appointment Dr. {doc} ke saath pehle se confirmed hai!\n\n"
+                    f"📅 *Date:* {date_str}\n"
+                    f"⏰ *Time:* {time_str}\n"
+                    f"🎫 *Token Number:* {tok}\n"
+                    f"👤 *Patient Name:* {pname}\n\n"
+                    f"Aapko dubara booking karne ki zaroorat nahi hai. Kripya samay se 10-15 minute pehle clinic reception pahuchein."
+                )
+            return {
+                **state,
+                "appointment_step": "complete",
+                "reschedule_step": "",
+                "ui": "main",
+                "response": response,
+            }
+
+        # 2. Check CRM for upcoming appointments by phone, token, or patient name
         appts, ident = self._find_patient_appointments(state, text)
         if not ident:
             return {
                 **state,
+                "appointment_step": "",
                 "reschedule_step": "ask_identifier",
                 "ui": "",
-                "response": "To view your appointments, please provide your registered phone number or Token number (e.g. TKN-0001):",
+                "response": (
+                    "Aapka appointment verify karne ke liye, kripya apna *Token Number* (jaise TKN-0001) "
+                    "ya *Registered Patient Name* batayein, mai turant details check kar deta hu."
+                ),
             }
         if not appts:
             return {
                 **state,
+                "appointment_step": "",
+                "reschedule_step": "",
                 "ui": "main",
-                "response": f"You don't have any upcoming appointments scheduled under '{ident}'. To book an appointment, tap 'Book Appointment'.",
+                "response": f"Humein '{ident}' ke under koi upcoming appointment nahi mila. Agar aapko naya appointment book karna hai to 'Book Appointment' kahein.",
             }
 
-        lines = ["📋 **Your Upcoming Appointments:**\n"]
+        if len(appts) == 1:
+            a = appts[0]
+            tok = a.get("token_no") or a.get("appointment_id", "")
+            doc = a.get("doctor", "Doctor")
+            dt = a.get("date", "")
+            tm = a.get("time", "")
+            pname = a.get("patient_name", "")
+            status = a.get("status", "Confirmed")
+            response = (
+                f"📋 *Your Upcoming Appointments:*\n\n"
+                f"Ji haan! Aapka appointment Dr. {doc} ke saath scheduled hai:\n\n"
+                f"📅 *Date:* {dt}\n"
+                f"⏰ *Time:* {tm}\n"
+                f"🎫 *Token Number:* {tok}\n"
+                + (f"👤 *Patient Name:* {pname}\n" if pname else "")
+                + f"🔖 *Status:* {status}\n\n"
+                f"ℹ️ Kripya appointment time ({tm}) se 10-15 minute pehle clinic reception par report karein."
+            )
+            return {
+                **state,
+                "appointment_step": "complete",
+                "reschedule_step": "",
+                "upcoming_appointments": appts,
+                "ui": "main",
+                "response": response,
+            }
+
+        lines = ["📋 *Your Upcoming Appointments:*\n"]
         for idx, a in enumerate(appts, 1):
             tok = a.get("token_no") or a.get("appointment_id", "")
             lines.append(
-                f"{idx}. **Dr. {a.get('doctor', 'Doctor')}**\n"
+                f"{idx}. *Dr. {a.get('doctor', 'Doctor')}*\n"
                 f"   📅 Date: {a.get('date')} | ⏰ Time: {a.get('time')}\n"
                 f"   🎫 Token: {tok} | Status: {a.get('status', 'Confirmed')}\n"
             )
-        lines.append("\nTo reschedule or change a slot, simply say 'Reschedule'.\nTo cancel an appointment, say 'Cancel'.")
+        lines.append("\nTo reschedule or change a slot, say 'Reschedule'.\nTo cancel an appointment, say 'Cancel'.")
 
         return {
             **state,
+            "appointment_step": "complete",
+            "reschedule_step": "",
             "upcoming_appointments": appts,
             "ui": "select_appointment" if len(appts) > 1 else "main",
             "response": "\n".join(lines),

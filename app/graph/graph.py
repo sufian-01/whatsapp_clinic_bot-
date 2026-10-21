@@ -1,12 +1,47 @@
 """Build the clinic conversation graph."""
 
+import uuid
+from typing import Any, Optional
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from .nodes import GraphNodes
 from .state import GraphState
 
 
-def build_graph(nodes: GraphNodes):
+class CheckpointedGraph:
+    """Runnable wrapper providing automatic thread_id configuration for checkpointers.
+    
+    Ensures that multi-turn conversations retain LangGraph checkpoints across turns
+    keyed by tenant and patient phone/chat_id, while also gracefully handling one-shot calls.
+    """
+
+    def __init__(self, inner: Any, checkpointer: Optional[Any] = None) -> None:
+        self._inner = inner
+        self._checkpointer = checkpointer
+
+    def invoke(self, state: Any, config: Optional[dict] = None, **kwargs: Any) -> Any:
+        if not isinstance(state, dict):
+            return self._inner.invoke(state, config=config, **kwargs)
+
+        cfg = dict(config) if config else {}
+        configurable = dict(cfg.get("configurable", {}))
+
+        if "thread_id" not in configurable:
+            tid = state.get("chat_id") or state.get("phone") or state.get("patient_phone")
+            if not tid:
+                tid = f"thread_{uuid.uuid4().hex[:10]}"
+                state["chat_id"] = tid
+            configurable["thread_id"] = str(tid)
+
+        cfg["configurable"] = configurable
+        return self._inner.invoke(state, config=cfg, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def build_graph(nodes: GraphNodes, checkpointer: Optional[Any] = None) -> CheckpointedGraph:
     graph = StateGraph(GraphState)
     graph.add_node("classify_intent", nodes.classify)
     graph.add_node("retrieve", nodes.retrieve)
@@ -47,4 +82,7 @@ def build_graph(nodes: GraphNodes):
     graph.add_edge("report_response", END)
     graph.add_edge("human_support", END)
     graph.add_edge("answer", END)
-    return graph.compile()
+
+    cp = checkpointer if checkpointer is not None else MemorySaver()
+    compiled = graph.compile(checkpointer=cp)
+    return CheckpointedGraph(compiled, checkpointer=cp)

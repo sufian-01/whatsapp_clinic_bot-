@@ -4,7 +4,7 @@ from typing import TypedDict
 
 
 class GraphState(TypedDict, total=False):
-    chat_id: int
+    chat_id: int | str
     user_text: str
     intent: str
     messages: list[dict[str, str]]
@@ -51,3 +51,7 @@ class GraphState(TypedDict, total=False):
     cancel_appointment_id: str
     cancellation_reason: str
     upcoming_appointments: list[dict]
+    # Memory and checkpointer context
+    last_booked_appointment: dict
+    recent_context: dict
+    phone: str

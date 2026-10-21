@@ -52,6 +52,10 @@ def classify_intent(state: dict) -> dict:
     if state.get("cancel_step"):
         return {**state, "intent": "appointment_cancel"}
     if state.get("appointment_step") and state.get("appointment_step") != "complete":
+        # Check if user explicitly stated an existing booking or asked about their visit timing
+        if _is_existing_appointment_query(text):
+            logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments' (Interrupting active booking)", text)
+            return {**state, "intent": "patient_appointments", "appointment_step": "complete"}
         # Check if user explicitly switched to cancel, reschedule, or unrelated clinic/doctor info
         if _is_cancel_query(text) and any(w in text for w in ("booking", "appointment", "token", "tkn", "meri", "my")):
             return {**state, "intent": "appointment_cancel"}
@@ -88,8 +92,9 @@ def classify_intent(state: dict) -> dict:
     if _is_cancel_query(text):
         return {**state, "intent": "appointment_cancel"}
 
-    # 6. Check upcoming appointments
-    if _is_my_appointments_query(text):
+    # 6. Check upcoming appointments or timing of booked visit
+    if _is_my_appointments_query(text) or _is_existing_appointment_query(text):
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments'", text)
         return {**state, "intent": "patient_appointments"}
 
     # 7. Doctor list query or symptom concern
@@ -126,7 +131,7 @@ def _is_booking_query(text: str) -> bool:
     lowered = text.casefold()
 
     # Rule out queries that clearly belong to other intents
-    if _is_reschedule_query(lowered) or _is_cancel_query(lowered):
+    if _is_reschedule_query(lowered) or _is_cancel_query(lowered) or _is_existing_appointment_query(lowered):
         return False
     if any(q in lowered for q in ("policy", "rules", "rule", "fee", "fees", "charge", "charges", "hours", "timing", "address", "location")):
         return False
@@ -217,6 +222,64 @@ def _is_cancel_query(text: str) -> bool:
         return True
     if lowered.strip() in {"cancel", "cancel appointment", "appointment cancel"}:
         return True
+    return False
+
+
+def _is_clinic_hours_query(text: str) -> bool:
+    """True if user asks general clinic hours/timing rather than their personal appointment time."""
+    lowered = text.casefold()
+    if any(p in lowered for p in ("mera", "meri", "mujhe", "my", "appointment", "appoinment", "token", "tkn")):
+        return False
+    if any(w in lowered for w in ("clinic timing", "hospital timing", "kab khulta", "kab band", "opening time", "closing time", "clinic time", "hospital time")):
+        return True
+    return False
+
+
+def _is_existing_appointment_query(text: str) -> bool:
+    """True if patient is asking about their already booked appointment or arrival timing."""
+    import re
+    lowered = text.casefold()
+
+    # Rule out reschedule or cancel intents
+    if _is_reschedule_query(lowered) or _is_cancel_query(lowered):
+        return False
+    if _is_clinic_hours_query(text):
+        return False
+
+    # 1. Arrival timing queries ("kitne bje aana hai mujhe ?", "kab aana hai", "time kya hai")
+    timing_arrival_phrases = (
+        "kitne bje aana", "kitne baje aana", "kab aana hai", "kab aana", "kab pahunchna",
+        "kis time aana", "mera time kya hai", "time kya hai", "timing kya hai",
+        "samay kya hai", "kya time h", "kya time hai", "kitne bje hai", "kitne baje hai",
+        "kab hai mera", "kab h mera", "what time should i come", "when should i come",
+        "what time is my appointment", "what is my appointment time", "when is my appointment",
+        "arrival time", "reporting time", "reach time", "clinic kab aana",
+        "mera time", "mujhe kab aana", "mujhe kitne bje", "mujhe kitne baje",
+    )
+    if any(p in lowered for p in timing_arrival_phrases):
+        return True
+
+    # 2. Already booked / past tense booking statements
+    # e.g., "maine appoinment book kia hai dr sufian se", "mai book kr chuka hu", "already booked"
+    already_booked_phrases = (
+        "book kia hai", "book kiya hai", "book kia tha", "book kiya tha", "book kiya hu", "book kia hu",
+        "book kr chuka", "book kar chuka", "book ho chuka", "book ho gaya", "booking ho gayi", "booking ho chuki",
+        "already book", "already booked", "pehle se book", "already have an appointment",
+        "i already booked", "i have booked", "i booked", "appointment ho gaya",
+        "appointment ho chuka", "mera appointment hai", "meri booking hai",
+        "mera appointment ho chuka", "booking already", "token number kya", "mera token number",
+        "mera token kya hai", "token no kya",
+    )
+    if any(p in lowered for p in already_booked_phrases):
+        return True
+
+    if re.search(r"\b(maine|humne|mera|meri|mai|mein)\b.*\b(book|booking|appointment|appoinment)\b.*\b(hai|tha|thi|chuka|chuki|gaya|gayi)\b", lowered):
+        return True
+    if re.search(r"\b(already|pehle se)\b.*\b(booked|booking|appointment|appoinment)\b", lowered):
+        return True
+    if re.search(r"\b(kitne|kis|kya|kab)\b.*\b(bje|baje|time|samay)\b.*\b(aana|pahunchna|reach|mujhe|mera|appointment)\b", lowered):
+        return True
+
     return False
 
 
