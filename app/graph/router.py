@@ -1,7 +1,7 @@
 """Routing helpers for the conversational graph."""
 
 import logging
-from ..tools.doctors import match_health_concern
+from ..tools.doctors import match_health_concern, resolve_specialization
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,34 @@ def _has_doctor_term(text: str) -> bool:
     return bool(re.search(r"\b(doctor|doctors|dr|dr\.|physician|gynecologist|cardiologist|pediatrician|dermatologist|orthopedic|specialist)\b", text.lower()))
 
 
+def _is_draft_cancel_or_rejection(text: str) -> bool:
+    """True if user wants to cancel, abandon, reject, or stop the current in-progress booking flow."""
+    import re
+    lowered = text.casefold().strip()
+    if _is_cancel_query(lowered):
+        return True
+
+    # Negative rejections of booking flow: e.g. "appoinment ki batt ni kr rha mei", "nahi chahiye", "rehne do"
+    rejection_phrases = (
+        "rehne do", "rehne de", "nahi chahiye", "nahi karna", "nahi karni", "mat karo", "chhod do", "chhor do",
+        "baat nahi kar raha", "batt ni kr rha", "baat nahi kar rahe", "baat nahi ho rahi", "baat nhi",
+        "nahi mang raha", "nahi maang raha", "nahi bola", "nahi bol raha", "ni kr rha", "nahi kar raha",
+        "appointment nahi", "appoinment nahi", "no appointment", "nahi chahiye appointment",
+        "nahi karwana", "nahi book karna", "nahi book karni", "khatam karo", "band karo",
+        "stop", "exit", "quit", "abort", "cancel kar", "cancel karo", "nahi lena", "nahi leni",
+    )
+    if any(p in lowered for p in rejection_phrases):
+        return True
+
+    if re.search(r"\b(appoinment|appointment|booking)\b.*\b(baat|batt|nahi|nhi|mat|rehne|cancel|ni)\b", lowered):
+        return True
+    if re.search(r"\b(baat|batt|nahi|nhi|mat|rehne|cancel)\b.*\b(appoinment|appointment|booking)\b", lowered):
+        return True
+    if lowered in {"cancel", "nahi", "no", "stop", "exit", "quit", "nhi"}:
+        return True
+    return False
+
+
 def classify_intent(state: dict) -> dict:
     text = state.get("user_text", "").lower()
     clean_text = text.strip()
@@ -33,43 +61,30 @@ def classify_intent(state: dict) -> dict:
     if clean_text in ("btn_my_reports", "📄 my reports", "my reports", "my reports / rx"):
         return {**state, "intent": "report_enquiry"}
 
-    # Standalone greeting (only when not in an active booking/reschedule/cancel flow)
+    # 1. Standalone greeting (only when not in an active booking/reschedule/cancel flow)
     if _is_greeting(clean_text) and not state.get("appointment_step") and not state.get("reschedule_step") and not state.get("cancel_step"):
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'greeting'", text)
         return {**state, "intent": "greeting"}
 
-    # 1. Human support request
-    if any(term in text for term in ("human", "real person", "support", "contact someone", "talk to someone", "human agent", "customer care")):
-        return {**state, "intent": "human_support"}
-
-    # 2. Lab / report enquiry
-    if any(term in text for term in ("report", "test result", "lab result")):
-        return {**state, "intent": "report_enquiry"}
-
-    # 3. Active conversation steps
-    if state.get("reschedule_step"):
-        return {**state, "intent": "appointment_reschedule"}
-    if state.get("cancel_step"):
-        return {**state, "intent": "appointment_cancel"}
-    if state.get("appointment_step") and state.get("appointment_step") != "complete":
-        # 1. Check if user wants to cancel / abandon the in-progress booking draft
-        is_draft_cancel = any(phrase in text for phrase in (
-            "rehne do", "rehne de", "nahi chahiye", "nahi karna", "mat karo", "chhod do",
-            "cancel booking", "cancel appointment", "cancel draft", "cancel kar", "stop", "abort",
-            "appointment nahi", "nahi leni", "don't want", "no appointment", "nahi chahiye appointment",
-            "nahi karwana", "nahi book karna", "khatam karo", "band karo"
-        )) or clean_text in ("cancel", "nahi", "no", "stop", "exit", "quit")
-        if is_draft_cancel:
+    # 2. Universal Cancellation / Drop flow check (HIGHEST PRIORITY)
+    if _is_draft_cancel_or_rejection(text):
+        if state.get("appointment_step") or state.get("active_flow") == "appointment_booking":
             logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_draft_cancel'", text)
             return {
                 **state,
                 "intent": "appointment_draft_cancel",
                 "interruption_type": "cancellation",
             }
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_cancel'", text)
+        return {**state, "intent": "appointment_cancel"}
 
-        # 2. Check if user explicitly switched to another service (like report enquiry)
-        if any(term in text for term in ("report", "test result", "lab result")) or "report ke baare mein" in text:
-            logger.info("[ROUTER] User text: '%s' -> Interrupted booking for report_enquiry", text)
+    # 3. Human support request
+    if any(term in text for term in ("human", "real person", "support", "contact someone", "talk to someone", "human agent", "customer care")):
+        return {**state, "intent": "human_support"}
+
+    # 4. Lab / report enquiry
+    if any(term in text for term in ("report", "test result", "lab result")) or "report ke baare mein" in text:
+        if state.get("appointment_step"):
             return {
                 **state,
                 "intent": "report_enquiry",
@@ -77,35 +92,49 @@ def classify_intent(state: dict) -> dict:
                 "appointment_step": "complete",
                 "active_flow": None,
             }
+        return {**state, "intent": "report_enquiry"}
 
-        # 3. Check if user inquired about an existing booking / timing
-        if _is_existing_appointment_query(text):
-            logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments' (Interrupting active booking)", text)
-            return {**state, "intent": "patient_appointments", "appointment_step": "complete"}
+    # 5. Check upcoming appointments or timing of booked visit
+    if _is_my_appointments_query(text) or _is_existing_appointment_query(text):
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments'", text)
+        return {**state, "intent": "patient_appointments", "appointment_step": "complete"}
 
-        # 4. If at email step and providing email address or skip, stay in appointment_flow
-        if state.get("appointment_step") == "email" and any(term in text for term in ("@", ".com", ".in", ".org", "skip")):
-            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "email"}
+    # 6. Reschedule intent
+    if _is_reschedule_query(text):
+        return {**state, "intent": "appointment_reschedule"}
 
-        # 5. If at phone step and providing phone number with >= 5 digits, stay in appointment_flow
-        import re
-        if state.get("appointment_step") == "phone" and len(re.sub(r"\D", "", text)) >= 5:
-            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "phone"}
+    # 7. Active booking flow handling
+    if state.get("appointment_step") and state.get("appointment_step") != "complete":
+        step = state.get("appointment_step")
 
-        # 6. Check if user is asking a clinic or doctor side-question during booking
+        # Check if user asked a side question about doctor list
+        if _is_doctor_list_query(text) or (step == "name" and resolve_specialization(text) is not None):
+            resume_ctx = {
+                "flow": "appointment_booking",
+                "pending_field": step,
+                "interrupted_at_step": step,
+            }
+            return {
+                **state,
+                "intent": "doctor_list",
+                "interruption_type": "side_question",
+                "resume_context": resume_ctx,
+                "active_flow": "appointment_booking",
+            }
+
+        # Check if user asked a clinic or doctor side question (hours, address, fees, etc.)
         is_clinic_info = any(term in text for term in (
             "hours", "timing", "timings", "samay", "kab khulta", "khula", "band",
             "address", "where", "location", "kahan", "kaha", "kidhar", "pata", "jagah",
             "fee", "fees", "cost", "price", "charge", "charges", "kitna", "kitne", "rate", "paisa", "rupaye",
             "parking", "service", "services", "facility", "facilities", "qualification",
             "insurance", "mediclaim", "ayushman", "contact", "kaun"
-        ))
+        )) or _is_clinic_hours_query(text)
         if is_clinic_info:
-            current_step = state.get("appointment_step")
             resume_ctx = {
                 "flow": "appointment_booking",
-                "pending_field": current_step,
-                "interrupted_at_step": current_step,
+                "pending_field": step,
+                "interrupted_at_step": step,
             }
             if _has_doctor_term(text):
                 return {
@@ -122,47 +151,64 @@ def classify_intent(state: dict) -> dict:
                 "resume_context": resume_ctx,
                 "active_flow": "appointment_booking",
             }
+
+        # Check if user asked a general question during name step
+        lowered_txt = text.strip()
+        is_question = "?" in lowered_txt or any(w in lowered_txt.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what", "kab", "kitne", "kahan", "batao", "btao"))
+        if is_question and step == "name":
+            resume_ctx = {
+                "flow": "appointment_booking",
+                "pending_field": step,
+                "interrupted_at_step": step,
+            }
+            return {
+                **state,
+                "intent": "other_help",
+                "interruption_type": "side_question",
+                "resume_context": resume_ctx,
+                "active_flow": "appointment_booking",
+            }
+
+        # Otherwise, the user is advancing the booking flow
         return {
             **state,
             "intent": "appointment_flow",
             "active_flow": "appointment_booking",
-            "pending_field": state.get("appointment_step"),
+            "pending_field": step,
         }
 
-    # 4. Reschedule intent
-    if _is_reschedule_query(text):
+    if state.get("reschedule_step"):
         return {**state, "intent": "appointment_reschedule"}
-
-    # 5. Cancellation intent
-    if _is_cancel_query(text):
+    if state.get("cancel_step"):
         return {**state, "intent": "appointment_cancel"}
 
-    # 6. Check upcoming appointments or timing of booked visit
-    if _is_my_appointments_query(text) or _is_existing_appointment_query(text):
-        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments'", text)
-        return {**state, "intent": "patient_appointments"}
+    # 8. Booking intent initiation (takes priority if user explicitly requests to book)
+    if _is_booking_query(text) and not _is_doctor_list_query(text):
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_booking'", text)
+        return {**state, "intent": "appointment_booking"}
 
-    # 7. Doctor list query or symptom concern
-    if _is_doctor_list_query(text) or match_health_concern(text)[0] is not None:
+    # 9. Doctor list query or symptom concern
+    if (
+        _is_doctor_list_query(text)
+        or match_health_concern(text)[0] is not None
+        or resolve_specialization(text) is not None
+        or _is_availability_query(state, text)
+    ):
         return {**state, "intent": "doctor_list"}
 
-    # 8. Availability queries (including follow-ups like 'aur Friday ko?')
-    if _is_availability_query(state, text):
-        return {**state, "intent": "doctor_list"}
-
-    # 9. Booking intent
+    # 10. Booking fallback if _is_booking_query was true
     if _is_booking_query(text):
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_booking'", text)
         return {**state, "intent": "appointment_booking"}
 
-    # 10. Doctor information lookup
+    # 11. Doctor information lookup
     if _has_doctor_term(text):
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'doctor_information'", text)
         return {**state, "intent": "doctor_information"}
 
-    # 11. General clinic information
-    is_clinic_info = any(term in text for term in ("clinic", "hours", "timing", "address", "where", "location", "kahan", "service", "test", "price"))
-    if is_clinic_info:
+    # 12. General clinic information
+    is_general_info = any(term in text for term in ("clinic", "hours", "timing", "address", "where", "location", "kahan", "service", "test", "price"))
+    if is_general_info or _is_clinic_hours_query(text):
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'clinic_information'", text)
         return {**state, "intent": "clinic_information"}
 
@@ -348,6 +394,8 @@ def _is_my_appointments_query(text: str) -> bool:
 
 def _is_availability_query(state: dict, text: str) -> bool:
     """Recognize direct and Hinglish questions about factual appointment slots."""
+    if _is_clinic_hours_query(text):
+        return False
     availability_terms = (
         "available", "availability", "free", "slot", "slots", "when", "kab", "aur kab",
         "timing", "timings", "schedule", "milenge", "milte", "dekh sakte",
@@ -381,7 +429,10 @@ def _is_doctor_list_query(text: str) -> bool:
     - "Which dr are available on 29th?"
     - "Which cardiologist is available?"
     - "Show me the doctors"
+    - "kon kon se dr hai"
+    - "kaun se doctor hain"
     """
+    import re
     has_list_trigger = any(
         phrase in text for phrase in (
             "which doctor", "which dr", "available doctor", "list doctor",
@@ -391,9 +442,17 @@ def _is_doctor_list_query(text: str) -> bool:
             "doctor list", "all doctor", "tell me your doctor",
             "doctor ki list", "doctors ki list", "list dikhao", "list batao",
             "doctors list", "doctor dikhao", "doctors dikhao",
+            "kon kon se dr", "kon se dr", "kaun se doctor", "kaun kaun se doctor",
+            "kaun se dr", "kaun kaun se dr", "kaun doctor", "kaun dr",
+            "konsa dr", "konsa doctor", "koun se dr", "koun se doctor",
+            "doctor batao", "doctors batao", "dr batao", "dr btao", "doctor btao",
+            "doctors btao", "kon doctor", "kon dr", "kise dikhaye", "kis doctor",
         )
     )
     if has_list_trigger:
+        return True
+
+    if re.search(r"\b(kon|kaun|koun|konsa|which)\b.*\b(dr|doctor|specialist|physician)\b", text):
         return True
 
     # "which <specialization> is available?" or "which <specialization> do you have?"

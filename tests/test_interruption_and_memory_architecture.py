@@ -338,6 +338,54 @@ class InterruptionAndMemoryArchitectureTests(unittest.TestCase):
         self.assertEqual(res_after_restart.get("doctor_name"), "Dr. Arjun Mehta")
         self.assertIn("XYZ Clinic", res_after_restart.get("response", ""))
 
+    def test_13_screenshot_doctor_inquiry_during_name_step(self):
+        """TEST 13: Exact query from live WhatsApp screenshot:
+        User starts booking -> asks 'pehle yeh btao kon kon se dr hai ? , mujhe cardiologi se milna h'
+        Bot MUST list the doctors/cardiologist and NOT repeat 'Kripya patient ka poora naam share karein'.
+        """
+        phone = "919777766665"
+        res1 = self._send_msg("new appoinment krdo", phone=phone)
+        self.assertEqual(res1.get("appointment_step"), "name")
+
+        res2 = self._send_msg("pehle yeh btao kon kon se dr hai ? , mujhe cardiologi se milna h", phone=phone)
+        resp_text = res2.get("response", "")
+        # Must NOT demand patient full name
+        self.assertNotIn("poora naam share karein", resp_text.lower())
+        # Must list available doctors
+        self.assertTrue("Arjun Mehta" in resp_text or "General" in resp_text or "Sana Khan" in resp_text or "doctor" in resp_text.lower())
+        # Active flow remains preserved
+        self.assertEqual(res2.get("active_flow"), "appointment_booking")
+
+    def test_14_screenshot_negative_statement_cancels_booking(self):
+        """TEST 14: Exact query from live WhatsApp screenshot:
+        User at name step says 'appoinment ki batt ni kr rha mei'
+        Bot MUST cancel the draft and stop asking for name.
+        """
+        phone = "919777766664"
+        self._send_msg("new appoinment krdo", phone=phone)
+        res_cancel = self._send_msg("appoinment ki batt ni kr rha mei", phone=phone)
+
+        self.assertIsNone(res_cancel.get("active_flow"))
+        self.assertEqual(res_cancel.get("appointment_step"), "")
+        self.assertIn("cancel", res_cancel.get("response", "").lower())
+
+        # Next user message is treated as fresh inquiry, not booking
+        res_after = self._send_msg("Hello", phone=phone)
+        self.assertNotIn("poora naam share karein", res_after.get("response", "").lower())
+
+    def test_15_screenshot_cancel_this_appointment(self):
+        """TEST 15: Exact query from live WhatsApp screenshot:
+        User says 'cancel this appointment' mid-flow
+        Bot MUST cancel the draft and not ask for name again.
+        """
+        phone = "919777766663"
+        self._send_msg("new appoinment krdo", phone=phone)
+        res_cancel = self._send_msg("cancel this appointment", phone=phone)
+
+        self.assertIsNone(res_cancel.get("active_flow"))
+        self.assertEqual(res_cancel.get("appointment_step"), "")
+        self.assertIn("cancel", res_cancel.get("response", "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

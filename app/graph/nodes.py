@@ -235,6 +235,11 @@ class GraphNodes:
                 spec_name = doctors[0].get("Specialization", spec_canonical.title())
                 intro = f"Our available {spec_name} specialist(s):"
                 response = format_doctor_list_display(doctors, intro=intro)
+                if state.get("appointment_step") and state.get("appointment_step") != "complete":
+                    if _is_hindi_or_hinglish(text):
+                        response += "\n\n*(Aapka appointment booking chalu hai. Kripya upar diye gaye doctor ka naam select karein ya apna agla detail batayein.)*"
+                    else:
+                        response += "\n\n*(Your appointment booking is still active. Please select a doctor above or reply to continue.)*"
                 return {
                     **state,
                     "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
@@ -248,6 +253,11 @@ class GraphNodes:
             return {**state, "response": "No doctors are currently available. Please contact the clinic team at " + self._support_phone + "."}
 
         response = format_doctor_list_display(doctors)
+        if state.get("appointment_step") and state.get("appointment_step") != "complete":
+            if _is_hindi_or_hinglish(text):
+                response += "\n\n*(Aapka appointment booking chalu hai. Kripya upar diye gaye doctor ka naam select karein ya apna agla detail batayein.)*"
+            else:
+                response += "\n\n*(Your appointment booking is still active. Please select a doctor above or reply to continue.)*"
         return {
             **state,
             "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
@@ -560,13 +570,9 @@ class GraphNodes:
             return self.my_appointments_node({**state, "appointment_step": "complete"})
 
         # Guard: If user wants to exit / cancel booking flow
-        if text.casefold() in ("cancel", "exit", "stop", "quit", "band karo", "nahi chahiye", "rehne do", "khatam karo"):
-            return {
-                **state,
-                "appointment_step": "",
-                "ui": "main",
-                "response": "Appointment booking cancelled. How else can I assist you today?"
-            }
+        from .router import _is_draft_cancel_or_rejection
+        if _is_draft_cancel_or_rejection(text):
+            return self.appointment_draft_cancel(state)
 
         # Guard: If user provides or selects a doctor at any point during active booking
         if self._doctors:
@@ -577,10 +583,22 @@ class GraphNodes:
         if step == "name":
             cleaned = text.strip()
             lowered = cleaned.casefold()
-            is_question = "?" in cleaned or any(w in lowered.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what", "kab", "kitne"))
+            is_question = "?" in cleaned or any(w in lowered.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what", "kab", "kitne", "batao", "btao"))
             is_greeting = lowered in {"hi", "hello", "hey", "hii", "namaste"}
             is_booking_phrase = any(w in lowered for w in ("book", "appointment", "appoinment", "doctor", "dr", "chahiye", "karo", "chuka"))
-            if is_question or is_greeting or is_booking_phrase or len(cleaned) < 2:
+            if is_question:
+                resume_ctx = {
+                    "flow": "appointment_booking",
+                    "pending_field": "name",
+                    "interrupted_at_step": "name",
+                }
+                return self.answer({
+                    **state,
+                    "interruption_type": "side_question",
+                    "resume_context": resume_ctx,
+                    "active_flow": "appointment_booking",
+                })
+            if is_greeting or is_booking_phrase or len(cleaned) < 2:
                 if _is_hindi_or_hinglish(cleaned):
                     return {**state, "ui": "", "response": "Kripya patient ka poora naam share karein (jaise 'Rahul Sharma') jinke liye appointment book karni hai."}
                 return {**state, "ui": "", "response": "Please provide the patient's full name to continue with the appointment."}

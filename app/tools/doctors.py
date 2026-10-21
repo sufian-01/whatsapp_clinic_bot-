@@ -166,7 +166,8 @@ def resolve_specialization(text: str) -> str | None:
     """Map free-text specialization keyword to canonical specialization key."""
     lowered = text.casefold().strip()
     for canonical, aliases in _SPECIALIZATION_ALIASES.items():
-        if canonical in lowered or any(alias in lowered for alias in aliases):
+        pattern = r"\b(" + "|".join(re.escape(a) for a in [canonical] + aliases) + r")\b"
+        if re.search(pattern, lowered):
             return canonical
     return None
 
