@@ -574,11 +574,18 @@ class GraphNodes:
         if _is_draft_cancel_or_rejection(text):
             return self.appointment_draft_cancel(state)
 
-        # Guard: If user provides or selects a doctor at any point during active booking
+        # Guard: If user provides or selects a doctor during active booking.
+        # When asking for patient details (name, email, phone), NEVER intercept a bare name (like 'Habiba', 'Arjun', 'Sana')
+        # as a doctor selection unless the user explicitly used a doctor indicator (e.g. 'Dr.', 'Doctor', 'DOC-').
         if self._doctors:
-            doc_resolution = self._doctors.resolve_doctor(text)
-            if doc_resolution.get("status") == "matched":
-                return self._accept_doctor(state, doc_resolution["doctor"])
+            has_doc_indicator = (
+                any(prefix in text.lower() for prefix in ("dr.", "dr ", "doctor", "doc:", "doctor:"))
+                or text.strip().upper().startswith(("DOC-", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9"))
+            )
+            if step not in ("name", "email", "phone") or has_doc_indicator:
+                doc_resolution = self._doctors.resolve_doctor(text)
+                if doc_resolution.get("status") == "matched":
+                    return self._accept_doctor(state, doc_resolution["doctor"])
 
         if step == "name":
             cleaned = text.strip()

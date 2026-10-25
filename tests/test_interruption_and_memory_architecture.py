@@ -386,6 +386,34 @@ class InterruptionAndMemoryArchitectureTests(unittest.TestCase):
         self.assertEqual(res_cancel.get("appointment_step"), "")
         self.assertIn("cancel", res_cancel.get("response", "").lower())
 
+    def test_16_patient_name_matching_doctor_name_is_accepted_not_hijacked(self):
+        """TEST 16: Live WhatsApp screenshot edge case:
+        Patient clicks 'Book Appointment' -> Bot asks 'Sure. May I know your name?'
+        Patient replies 'Habiba' or 'Sana' (whose name matches a doctor in the clinic).
+        Bot MUST accept the name as patient_name, NOT hijack it as a doctor selection or
+        say 'Dr. Habiba has no upcoming available slots'.
+        """
+        phone = "919888877771"
+        res1 = self._send_msg("Book Appointment", phone=phone)
+        self.assertEqual(res1.get("appointment_step"), "name")
+        self.assertIn("name", res1.get("response", "").lower())
+
+        # Patient sends 'Sana' (matching Dr. Sana Khan in directory)
+        res2 = self._send_msg("Sana", phone=phone)
+        # Must NOT think it is selecting Dr. Sana Khan
+        self.assertEqual(res2.get("patient_name"), "Sana")
+        self.assertEqual(res2.get("appointment_step"), "email")
+        self.assertIn("email", res2.get("response", "").lower())
+        self.assertNotIn("no upcoming available slots", res2.get("response", "").lower())
+
+        # Test with Habiba as well (if Habiba is a doctor)
+        phone2 = "919888877772"
+        res1_b = self._send_msg("Book Appointment", phone=phone2)
+        res2_b = self._send_msg("Habiba", phone=phone2)
+        self.assertEqual(res2_b.get("patient_name"), "Habiba")
+        self.assertEqual(res2_b.get("appointment_step"), "email")
+        self.assertNotIn("no upcoming available slots", res2_b.get("response", "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()
