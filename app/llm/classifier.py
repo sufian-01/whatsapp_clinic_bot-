@@ -70,6 +70,9 @@ def classify_with_ai(
     active_flow: Optional[str] = None,
     current_step: Optional[str] = None,
     history: Optional[list] = None,
+    expected_field: Optional[str] = None,
+    last_bot_question: Optional[str] = None,
+    collected_fields: Optional[Any] = None,
 ) -> Optional[dict]:
     """Use Gemini LLM to classify user message intent with structured output.
     
@@ -83,6 +86,12 @@ def classify_with_ai(
         context.append(f"Current active workflow: {active_flow}")
     if current_step:
         context.append(f"Pending step asked to patient: {current_step}")
+    if expected_field:
+        context.append(f"Expected field from patient: {expected_field}")
+    if last_bot_question:
+        context.append(f"Last question asked by clinic bot: {last_bot_question}")
+    if collected_fields:
+        context.append(f"Already collected fields in booking draft: {collected_fields}")
 
     try:
         if hasattr(llm, "answer"):

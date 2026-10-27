@@ -104,7 +104,15 @@ def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
         return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "phone"}
     if curr_step == "email" and ("@" in clean_text or clean_text == "skip"):
         return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "email"}
-    if curr_step in ("slot", "pre_patient_slot") and (clean_text.startswith("slot:") or clean_text.isdigit()):
+    if curr_step in ("slot", "pre_patient_slot") and (
+        clean_text.startswith("slot:") or clean_text.isdigit() or any(w in clean_text for w in (":", "am", "pm"))
+    ):
+        return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": curr_step}
+    if curr_step in ("date", "pre_patient_date") and (
+        any(w in clean_text for w in ("kal", "tomorrow", "today", "aaj", "parso", "somwar", "mangalwar", "budhwar", "guruwar", "shukrawar", "shaniwar", "ravivar"))
+        or any(w in clean_text for w in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"))
+        or any(c.isdigit() for c in clean_text)
+    ):
         return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": curr_step}
     if curr_step == "name":
         lowered_txt = text.strip()
@@ -115,6 +123,12 @@ def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
 
     # Deterministic 0ms queries when not in flow (saves LLM tokens and quota)
     if not curr_step and not state.get("reschedule_step") and not state.get("cancel_step"):
+        if _is_reschedule_query(text):
+            logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_reschedule' (deterministic)", text)
+            return {**state, "intent": "appointment_reschedule"}
+        if _is_my_appointments_query(text) or _is_existing_appointment_query(text):
+            logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'patient_appointments' (deterministic)", text)
+            return {**state, "intent": "patient_appointments", "appointment_step": "complete"}
         if _is_booking_query(text) and not _is_doctor_list_query(text):
             logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_booking' (deterministic)", text)
             return {**state, "intent": "appointment_booking"}
@@ -127,16 +141,22 @@ def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
             return {**state, "intent": "doctor_list"}
 
     # 4. AI-First Semantic Intent Classifier (Gemini LLM)
-    from ..core.feature_flags import is_feature_enabled, FEATURE_AI_AGENT
+    from ..core.feature_flags import is_feature_enabled, FEATURE_AI_AGENT, FEATURE_SMART_INTENT_V2
+    smart_intent_enabled = is_feature_enabled(state.get("feature_flags", {}), FEATURE_SMART_INTENT_V2, default=False)
     if llm and is_feature_enabled(state.get("feature_flags", {}), FEATURE_AI_AGENT, default=True):
         from ..llm.classifier import classify_with_ai
-        ai_res = classify_with_ai(
-            llm=llm,
-            user_text=state.get("user_text", ""),
-            active_flow=state.get("active_flow") or ("appointment_booking" if curr_step else None),
-            current_step=curr_step,
-            history=state.get("messages", []),
-        )
+        kwargs = {
+            "llm": llm,
+            "user_text": state.get("user_text", ""),
+            "active_flow": state.get("active_flow") or ("appointment_booking" if curr_step else None),
+            "current_step": curr_step,
+            "history": state.get("messages", []),
+        }
+        if smart_intent_enabled:
+            kwargs["expected_field"] = state.get("pending_field") or curr_step
+            kwargs["last_bot_question"] = state.get("last_bot_question") or (state.get("messages", [{}])[-1].get("text") if state.get("messages") else None)
+            kwargs["collected_fields"] = list((state.get("appointment_draft") or {}).keys())
+        ai_res = classify_with_ai(**kwargs)
         if ai_res and ai_res.get("intent"):
             ai_intent = ai_res["intent"]
             is_canc = ai_res.get("is_cancellation", False)
@@ -562,10 +582,10 @@ def _is_doctor_list_query(text: str) -> bool:
 
     # "which <specialization> is available?" or "which <specialization> do you have?"
     has_which = any(w in text for w in ("which", "what", "any", "who"))
-    has_spec = any(spec in text for spec in _SPECIALIZATION_TERMS)
+    has_spec = any(re.search(r"\b" + re.escape(spec) + r"\b", text) for spec in _SPECIALIZATION_TERMS)
     has_available = any(w in text for w in ("available", "have", "consult", "see", "visit"))
 
-    if (has_which and has_spec) or (has_spec and has_available) or (has_spec and "need" in text):
+    if (has_which and has_spec) or (has_spec and has_available) or (has_spec and re.search(r"\bneed\b", text)):
         return True
 
     # "available doctors/dr today?" pattern
