@@ -94,11 +94,17 @@ class PaymentTools:
         return {"success": False, "status": "NOT_FOUND", "payment_id": payment_id}
 
     def generate_offline_upi_qr(self, amount: str, clinic_name: str, reference: str, output_dir: Path) -> dict:
+        upi_id = (self._upi_id or "").strip()
+        if not upi_id:
+            return {
+                "success": False,
+                "error_code": "UPI_NOT_CONFIGURED",
+                "message": "Online payment is not set up for this clinic. Please choose offline payment or contact the clinic.",
+            }
         try:
             numeric_amount = Decimal(str(amount).replace(",", "").replace("₹", "").strip())
             if numeric_amount <= 0:
                 raise InvalidOperation
-            upi_id = self._upi_id or "clinic@upi"
             uri = "upi://pay?" + urlencode({"pa": upi_id, "pn": clinic_name, "am": f"{numeric_amount:.2f}", "cu": "INR", "tr": reference})
             output_dir.mkdir(parents=True, exist_ok=True)
             path = output_dir / f"{reference}-upi.png"

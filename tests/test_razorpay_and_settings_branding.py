@@ -443,3 +443,26 @@ def test_langgraph_online_payment_selection():
     assert out.get("flow") == "complete"
     assert out.get("payment_method") == "Razorpay / UPI"
 
+
+def test_missing_upi_qr_fails_gracefully_with_no_broken_qr(tmp_path):
+    """When tenant has no UPI ID configured, offline QR generation must fail gracefully with zero broken QR images."""
+    from app.tools.payments import PaymentTools
+    from app.repositories.postgres_crm_repositories import PostgresPaymentRepository
+    from unittest.mock import MagicMock
+
+    # 1. PaymentTools with empty UPI ID
+    tools = PaymentTools(upi_id="")
+    res = tools.generate_offline_upi_qr("500", "City Clinic", "REF123", tmp_path)
+    assert res["success"] is False
+    assert res["error_code"] == "UPI_NOT_CONFIGURED"
+    assert "not set up" in res["message"].lower()
+    assert not (tmp_path / "REF123-upi.png").exists()
+
+    # 2. PostgresPaymentRepository with empty UPI ID
+    repo = PostgresPaymentRepository(MagicMock(), upi_id="")
+    res2 = repo.generate_offline_upi_qr("500", "City Clinic", "REF124", tmp_path)
+    assert res2["success"] is False
+    assert res2["error_code"] == "UPI_NOT_CONFIGURED"
+    assert "not set up" in res2["message"].lower()
+    assert not (tmp_path / "REF124-upi.png").exists()
+

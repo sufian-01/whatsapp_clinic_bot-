@@ -6,6 +6,13 @@ __pycache__/
 google_auth.py
 client_secret_*.json
 
+# SQLite & DB files
+*.db
+*.sqlite
+*.sqlite3
+telegram.db
+data/clinic_dev.db
+
 data/knowledge/uploads/*
 data/knowledge/processed/*
 data/vectorstore/*

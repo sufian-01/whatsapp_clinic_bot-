@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Fallback test credentials if tenant has not yet configured their live keys
 DEFAULT_TEST_KEY_ID = "rzp_test_sampleKeyId123"
 DEFAULT_TEST_KEY_SECRET = "sampleSecret123"
-DEFAULT_UPI_ID = "clinic@upi"
+DEFAULT_UPI_ID = ""
 
 
 class RazorpayService:
@@ -76,7 +76,7 @@ class RazorpayService:
             "tr": payment_id,
             "tn": f"Consultation with Dr. {doctor_name}"[:40] if doctor_name else f"Clinic Consultation"[:40],
         }
-        upi_uri = "upi://pay?" + urlencode(upi_params)
+        upi_uri = ("upi://pay?" + urlencode(upi_params)) if effective_upi else ""
 
         payment_link_id = f"plink_{uuid4().hex[:14]}"
         short_url = f"https://rzp.io/i/{payment_id.lower()}"

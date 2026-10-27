@@ -1095,8 +1095,8 @@ class GraphNodes:
                 "success": True,
                 "payment_id": f"PAY-{token_no}",
                 "payment_url": f"https://rzp.io/i/{token_no.lower()}",
-                "upi_id": "clinic@upi",
-                "upi_uri": f"upi://pay?pa=clinic@upi&pn={clinic_name}&am={amt}&cu=INR&tr={token_no}",
+                "upi_id": "",
+                "upi_uri": "",
             }
 
             if self._patients and hasattr(self._patients, "create_patient"):
@@ -1132,8 +1132,9 @@ class GraphNodes:
             }
 
         pay_url = payment.get("payment_url") or payment.get("short_url") or f"https://rzp.io/i/{token_no.lower()}"
-        upi_id = payment.get("upi_id") or "clinic@upi"
-        upi_uri = payment.get("upi_uri") or f"upi://pay?pa={upi_id}&pn={clinic_name}&am={amt}&cu=INR&tr={token_no}"
+        upi_id = payment.get("upi_id") or ""
+        upi_uri = payment.get("upi_uri") or (f"upi://pay?pa={upi_id}&pn={clinic_name}&am={amt}&cu=INR&tr={token_no}" if upi_id else "")
+        upi_section = f"📱 *Direct UPI Payment:*\nUPI ID: `{upi_id}`\nUPI Deep Link: {upi_uri}\n\n" if upi_id else ""
 
         response_msg = (
             f"🎉 *Appointment Confirmed!*\n\n"
@@ -1145,9 +1146,9 @@ class GraphNodes:
             f"💰 Consultation Fee: ₹{amt}\n\n"
             f"🔗 *Pay via Razorpay Link (Cards/NetBanking/UPI):*\n"
             f"{pay_url}\n\n"
-            f"📱 *Direct UPI Payment:*\n"
-            f"UPI ID: `{upi_id}`\n"
-            f"UPI Deep Link: {upi_uri}\n\n"
+            f"{upi_section}"
+
+
             f"_(Payment complete hone ke baad clinic verification auto-update ho jayega. Aap clinic par cash se bhi pay kar sakte hain.)*"
         )
 
