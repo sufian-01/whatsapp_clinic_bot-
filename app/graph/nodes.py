@@ -1432,6 +1432,39 @@ class GraphNodes:
         support_phone = state.get("support_phone") or self._support_phone
         return {**state, "response": f"Please contact the {clinic_name} team at {support_phone}."}
 
+    def _build_booking_continuation_reminder(self, state: GraphState) -> str:
+        active_step = state.get("appointment_step")
+        if not active_step or active_step == "complete":
+            return ""
+        resume_ctx = state.get("resume_context")
+        pending_target = (resume_ctx.get("pending_field") if resume_ctx else None) or active_step
+        doc_name = state.get("doctor_name", "")
+        doc_hint = f" with Dr. {doc_name}" if doc_name else ""
+        step_prompt_hi = "Kripya apna agla detail batayein."
+        step_prompt_en = "Please continue whenever you are ready."
+        if pending_target == "doctor":
+            step_prompt_hi = "Aap kis doctor ke sath appointment book karna chahte hain?"
+            step_prompt_en = "Which doctor would you like to consult?"
+        elif pending_target == "phone":
+            step_prompt_hi = "Kripya apna 10-digit mobile number share karein."
+            step_prompt_en = "Please share your 10-digit mobile number."
+        elif pending_target == "name":
+            step_prompt_hi = "Kripya patient ka poora naam share karein."
+            step_prompt_en = "Please share the patient's full name."
+        elif pending_target in {"date", "pre_patient_date"}:
+            step_prompt_hi = "Kripya apni preferred date batayein."
+            step_prompt_en = "Please provide your preferred appointment date."
+        elif pending_target in {"slot", "pre_patient_slot"}:
+            step_prompt_hi = "Kripya apna preferred time slot select karein."
+            step_prompt_en = "Please select your preferred time slot."
+        elif pending_target == "email":
+            step_prompt_hi = "Kripya confirmation ke liye apna email address share karein (ya 'skip' likhein)."
+            step_prompt_en = "Please provide your email address, or type 'skip'."
+
+        if _is_hindi_or_hinglish(state.get("user_text", "")):
+            return f"\n\n*(Aapka appointment booking{doc_hint} chalu hai. {step_prompt_hi})*"
+        return f"\n\n*(Your appointment booking{doc_hint} is still active. {step_prompt_en})*"
+
     def answer(self, state: GraphState) -> GraphState:
         logger.info(">>> [AGENT NODE TRIGGERED] 'answer' (LLM/Gemini) | user_text=%r", state.get("user_text", ""))
         clinic_name = state.get("clinic_name") or self._clinic_name
@@ -1451,6 +1484,18 @@ class GraphNodes:
             user_msg.strip().lower() in ("hi", "hii", "hello", "hey", "namaste", "hola", "salam")
             and not state.get("appointment_step")
         )
+
+        flags = state.get("feature_flags", {})
+        from ..core.feature_flags import is_feature_enabled, FEATURE_RAG_V2
+        if is_feature_enabled(flags, FEATURE_RAG_V2, default=False) and state.get("intent") == "clinic_information":
+            if not state.get("clinic_context"):
+                logger.info("RAG V2: 0 chunks retrieved for clinic_information, skipping LLM invocation.")
+                if _is_hindi_or_hinglish(user_msg):
+                    safe_msg = f"Ye jaankari hamare records mein uplabdh nahi hai. Kripya clinic reception par direct call karein: {support_phone} ya 'menu' likhein."
+                else:
+                    safe_msg = f"I do not have this information in our clinic records right now. Please call our clinic helpline directly at {support_phone}."
+                reminder = self._build_booking_continuation_reminder(state)
+                return {**state, "response": safe_msg + reminder}
 
         try:
             try:

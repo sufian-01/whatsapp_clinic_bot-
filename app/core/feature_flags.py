@@ -24,6 +24,7 @@ FEATURE_REPORT_ENQUIRY = "report_enquiry"        # Diagnostic report lookup & en
 FEATURE_AI_AGENT = "ai_agent"                    # AI-First conversational intelligence (default: True) vs lightweight rule-based mode
 FEATURE_BOOKING_GUARD_V2 = "booking_guard_v2"    # Hardened booking guards, attempts limit, loop breaker, idle recovery
 FEATURE_SMART_INTENT_V2 = "smart_intent_v2"      # Step-aware regex fast-paths, context-rich Gemini intent classification
+FEATURE_RAG_V2 = "rag_v2"                        # Safe 0-chunk zero-LLM fallback, calibrated multilingual retrieval
 
 # Subscription Tier Defaults
 SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
@@ -31,6 +32,7 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_AI_AGENT: True,
         FEATURE_BOOKING_GUARD_V2: False,
         FEATURE_SMART_INTENT_V2: False,
+        FEATURE_RAG_V2: False,
         FEATURE_VOICE_INBOUND: False,
         FEATURE_VOICE_OUTBOUND: False,
         FEATURE_INTERACTIVE_LISTS: True,
@@ -52,6 +54,7 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_REPORT_ENQUIRY: True,
         FEATURE_BOOKING_GUARD_V2: False,
         FEATURE_SMART_INTENT_V2: False,
+        FEATURE_RAG_V2: False,
     },
     "ENTERPRISE": {
         FEATURE_AI_AGENT: True,
@@ -65,6 +68,7 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_REPORT_ENQUIRY: True,
         FEATURE_BOOKING_GUARD_V2: False,
         FEATURE_SMART_INTENT_V2: False,
+        FEATURE_RAG_V2: False,
     },
 }
 
