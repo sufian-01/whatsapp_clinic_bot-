@@ -22,11 +22,13 @@ FEATURE_RESCHEDULING = "rescheduling"            # Patient self-rescheduling via
 FEATURE_RAG_KNOWLEDGE = "rag_knowledge"          # Clinic FAQ, guidelines & doctor RAG retrieval
 FEATURE_REPORT_ENQUIRY = "report_enquiry"        # Diagnostic report lookup & enquiry
 FEATURE_AI_AGENT = "ai_agent"                    # AI-First conversational intelligence (default: True) vs lightweight rule-based mode
+FEATURE_BOOKING_GUARD_V2 = "booking_guard_v2"    # Hardened booking guards, attempts limit, loop breaker, idle recovery
 
 # Subscription Tier Defaults
 SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
     "STARTER": {
         FEATURE_AI_AGENT: True,
+        FEATURE_BOOKING_GUARD_V2: False,
         FEATURE_VOICE_INBOUND: False,
         FEATURE_VOICE_OUTBOUND: False,
         FEATURE_INTERACTIVE_LISTS: True,
@@ -46,6 +48,7 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_RESCHEDULING: True,
         FEATURE_RAG_KNOWLEDGE: True,
         FEATURE_REPORT_ENQUIRY: True,
+        FEATURE_BOOKING_GUARD_V2: False,
     },
     "ENTERPRISE": {
         FEATURE_AI_AGENT: True,
@@ -57,6 +60,7 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_RESCHEDULING: True,
         FEATURE_RAG_KNOWLEDGE: True,
         FEATURE_REPORT_ENQUIRY: True,
+        FEATURE_BOOKING_GUARD_V2: False,
     },
 }
 
