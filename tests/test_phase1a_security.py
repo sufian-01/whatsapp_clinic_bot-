@@ -64,10 +64,9 @@ class Phase1aSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tools = PaymentTools()
             res = tools.generate_offline_upi_qr("500", "City Clinic", "TKN-101", Path(d))
-            self.assertTrue(res["success"])
-            self.assertEqual(tools.upi_id, "")
-            query = parse_qs(urlparse(res["upi_uri"]).query)
-            self.assertNotEqual(query.get("pa"), ["khansyrian1@okhdfcbank"])
+            self.assertFalse(res["success"])
+            self.assertEqual(res["error_code"], "UPI_NOT_CONFIGURED")
+            self.assertFalse((Path(d) / "TKN-101-upi.png").exists())
 
     def test_invoice_pdf_includes_dynamic_upi(self):
         with tempfile.TemporaryDirectory() as d:

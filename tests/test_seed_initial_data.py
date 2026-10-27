@@ -18,6 +18,7 @@ def test_seed_initial_data_populates_empty_database():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
+    original_db_url = os.environ.get("DATABASE_URL")
     try:
         os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
         reset_db_state()
@@ -62,6 +63,10 @@ def test_seed_initial_data_populates_empty_database():
         seed_database()
 
     finally:
+        if original_db_url is not None:
+            os.environ["DATABASE_URL"] = original_db_url
+        else:
+            os.environ.pop("DATABASE_URL", None)
         reset_db_state()
         try:
             if os.path.exists(db_path):
