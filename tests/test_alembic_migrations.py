@@ -1,22 +1,32 @@
 """Test alembic migrations schema validity."""
 
 import os
+import subprocess
+import sys
 import tempfile
 import pytest
-from alembic.config import Config
-from alembic import command
 from sqlalchemy import create_engine, inspect
 
 
 def test_alembic_upgrade_head_and_columns():
-    """Verify that all alembic migrations apply cleanly and required columns exist."""
+    """Verify that all alembic migrations apply cleanly and required columns exist.
+    
+    Runs alembic in an isolated subprocess to prevent mutating DATABASE_URL globally
+    or caching an in-memory SQLite engine in app.db.session._SESSION_FACTORY.
+    """
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
     try:
-        os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
-        cfg = Config("alembic.ini")
-        command.upgrade(cfg, "head")
+        env = os.environ.copy()
+        env["DATABASE_URL"] = f"sqlite:///{db_path}"
+        subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
         engine = create_engine(f"sqlite:///{db_path}")
         try:

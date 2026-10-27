@@ -377,11 +377,18 @@ class ConversationalFlowTests(unittest.TestCase):
     # 16. Invalid LLM fallback handling
     # ---------------------------------------------------------------------------
     def test_16_invalid_llm_fallback(self):
-        """When LLM throws an exception, answer node catches it and returns friendly error."""
+        """When user sends greeting, deterministic greeting returns even if LLM is down."""
         failing_llm = FakeLlm(should_fail=True)
         graph, _, _, _, _ = create_test_setup(llm=failing_llm)
         res = graph.invoke({"user_text": "Hello"})
-        self.assertIn("unable to answer right now", res["response"])
+        self.assertIn("Welcome to City Clinic", res["response"])
+
+    def test_16b_llm_failure_on_non_greeting_question_returns_safe_message(self):
+        """When user asks a non-greeting question and LLM fails, answer node returns safe helpline message."""
+        failing_llm = FakeLlm(should_fail=True)
+        graph, _, _, _, _ = create_test_setup(llm=failing_llm)
+        res = graph.invoke({"user_text": "Can you tell me about wheelchair access and parking at the building?"})
+        self.assertIn("helpline", res["response"].lower())
 
     # ---------------------------------------------------------------------------
     # 17. Separate Telegram user sessions

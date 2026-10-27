@@ -131,12 +131,15 @@ class IntegrationTests(unittest.TestCase):
 
     def test_gemini_failure_returns_safe_message(self):
         class BrokenLlm:
-            def answer(self, system_prompt, user_text, context):
+            def answer(self, system_prompt, user_text, context, *args, **kwargs):
                 raise RuntimeError("provider unavailable")
 
         graph = build_graph(GraphNodes("Test Clinic", BrokenLlm(), RagService(Path(tempfile.mkdtemp()))))
         result = graph.invoke({"user_text": "Hello"})
-        self.assertIn("unable to answer", result["response"])
+        self.assertIn("Welcome to Test Clinic", result["response"])
+
+        q_result = graph.invoke({"user_text": "Can you give me detailed hospital statistics?"})
+        self.assertIn("helpline", q_result["response"].lower())
 
     def test_telegram_failure_does_not_fail_webhook(self):
         settings = Settings("Test Clinic", "token", "", "key", "model", Path("knowledge"), Path("vectorstore"), "")
