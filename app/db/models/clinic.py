@@ -8,6 +8,7 @@ from ..base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from .appointment import Appointment
+    from .contact import Contact
     from .audit import AuditLog
     from .doctor import Doctor
     from .invoice import Invoice
@@ -74,6 +75,7 @@ class Clinic(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Relationships to tenant-owned entities
     users: Mapped[List["User"]] = relationship("User", back_populates="clinic", cascade="all, delete-orphan")
     doctors: Mapped[List["Doctor"]] = relationship("Doctor", back_populates="clinic", cascade="all, delete-orphan")
+    contacts: Mapped[List["Contact"]] = relationship("Contact", back_populates="clinic", cascade="all, delete-orphan")
     patients: Mapped[List["Patient"]] = relationship("Patient", back_populates="clinic", cascade="all, delete-orphan")
     appointments: Mapped[List["Appointment"]] = relationship("Appointment", back_populates="clinic", cascade="all, delete-orphan")
     slots: Mapped[List["AppointmentSlot"]] = relationship("AppointmentSlot", back_populates="clinic", cascade="all, delete-orphan")

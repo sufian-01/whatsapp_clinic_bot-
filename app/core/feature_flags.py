@@ -25,6 +25,7 @@ FEATURE_AI_AGENT = "ai_agent"                    # AI-First conversational intel
 FEATURE_BOOKING_GUARD_V2 = "booking_guard_v2"    # Hardened booking guards, attempts limit, loop breaker, idle recovery
 FEATURE_SMART_INTENT_V2 = "smart_intent_v2"      # Step-aware regex fast-paths, context-rich Gemini intent classification
 FEATURE_RAG_V2 = "rag_v2"                        # Safe 0-chunk zero-LLM fallback, calibrated multilingual retrieval
+FEATURE_FAMILY_BOOKING = "family_booking"          # Contact-centric multi-patient family booking & disambiguation
 
 # Subscription Tier Defaults
 SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
@@ -33,6 +34,7 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_BOOKING_GUARD_V2: False,
         FEATURE_SMART_INTENT_V2: False,
         FEATURE_RAG_V2: False,
+        FEATURE_FAMILY_BOOKING: False,
         FEATURE_VOICE_INBOUND: False,
         FEATURE_VOICE_OUTBOUND: False,
         FEATURE_INTERACTIVE_LISTS: True,

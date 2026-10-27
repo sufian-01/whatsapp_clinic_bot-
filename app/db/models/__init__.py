@@ -3,6 +3,7 @@
 from .appointment import Appointment
 from .audit import AuditLog
 from .clinic import Clinic
+from .contact import Contact
 from .doctor import Doctor
 from .invoice import Invoice
 from .patient import Patient
@@ -17,6 +18,7 @@ __all__ = [
     "AppointmentSlot",
     "AuditLog",
     "Clinic",
+    "Contact",
     "Doctor",
     "Invoice",
     "Patient",

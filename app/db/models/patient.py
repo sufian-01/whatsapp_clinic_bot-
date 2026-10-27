@@ -10,6 +10,7 @@ from ..base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 if TYPE_CHECKING:
     from .appointment import Appointment
     from .clinic import Clinic
+    from .contact import Contact
     from .invoice import Invoice
     from .prescription import Prescription
     from .whatsapp import WhatsAppConversation
@@ -42,8 +43,17 @@ class Patient(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     medical_history: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="Active", nullable=False, index=True)
+    contact_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("contacts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    relationship_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="Self")
+    date_of_birth: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     # Relationships
+    contact: Mapped[Optional["Contact"]] = relationship("Contact", back_populates="patients")
     clinic: Mapped[Optional["Clinic"]] = relationship("Clinic", back_populates="patients")
     appointments: Mapped[List["Appointment"]] = relationship("Appointment", back_populates="patient", cascade="all, delete-orphan")
     prescriptions: Mapped[List["Prescription"]] = relationship("Prescription", back_populates="patient", cascade="all, delete-orphan")
