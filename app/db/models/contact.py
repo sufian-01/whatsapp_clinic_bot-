@@ -33,3 +33,4 @@ class Contact(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Relationships
     clinic: Mapped[Optional["Clinic"]] = relationship("Clinic", back_populates="contacts")
     patients: Mapped[List["Patient"]] = relationship("Patient", back_populates="contact")
+

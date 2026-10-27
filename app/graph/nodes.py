@@ -542,6 +542,50 @@ class GraphNodes:
                 res["response"] = f"Dr. Sufian is not on our panel, but we have {matched_doctor.get('Doctor Name')} ({matched_doctor.get('Specialization')}).\n\n{res['response']}"
             return res
 
+        from ..core.feature_flags import is_feature_enabled, FEATURE_FAMILY_BOOKING
+        family_booking_enabled = is_feature_enabled(flags, FEATURE_FAMILY_BOOKING, default=False)
+        phone = state.get("phone") or state.get("patient_phone") or ""
+        family_members = []
+        if family_booking_enabled and phone and self._patients is not None:
+            if hasattr(self._patients, "get_family_members"):
+                family_members = self._patients.get_family_members(phone, tenant_id=state.get("tenant_id", "default")) or []
+            elif hasattr(self._patients, "search_by_phone"):
+                family_members = self._patients.search_by_phone(phone) or []
+            elif hasattr(self._patients, "find_by_phone"):
+                family_members = self._patients.find_by_phone(phone) or []
+
+        unique_members = []
+        seen_names = set()
+        for m in family_members:
+            m_name = (m.get("Name") or m.get("patient_name") or m.get("full_name") or "").strip()
+            if m_name and m_name.lower() not in seen_names:
+                seen_names.add(m_name.lower())
+                unique_members.append(m)
+
+        if family_booking_enabled and unique_members:
+            number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+            lines = []
+            for idx, m in enumerate(unique_members):
+                emoji = number_emojis[idx] if idx < len(number_emojis) else f"{idx+1}."
+                rel = m.get("Relationship") or m.get("relationship_type") or "Self"
+                m_name = (m.get("Name") or m.get("patient_name") or m.get("full_name") or "").strip()
+                lines.append(f"{emoji} {m_name} ({rel})")
+            next_idx = len(unique_members)
+            next_emoji = number_emojis[next_idx] if next_idx < len(number_emojis) else f"{next_idx+1}."
+            lines.append(f"{next_emoji} Naye patient ke liye (New Patient)")
+
+            return {
+                **state,
+                **extra,
+                "active_flow": "appointment_booking",
+                "appointment_draft": draft,
+                "appointment_step": "choose_for_whom",
+                "pending_field": "choose_for_whom",
+                "family_members": unique_members,
+                "ui": "",
+                "response": "Welcome back! Kiske liye appointment book karni hai?\n\n" + "\n".join(lines),
+            }
+
         # 6. If doctor was already selected in prior state
         selected_doc = self._selected_doctor(state)
         if selected_doc:
@@ -717,6 +761,110 @@ class GraphNodes:
                 if doc_resolution.get("status") == "matched":
                     return self._accept_doctor(state, doc_resolution["doctor"])
 
+        if step == "choose_for_whom":
+            members = state.get("family_members") or []
+            if not members and self._patients is not None:
+                phone = state.get("phone") or state.get("patient_phone") or ""
+                if hasattr(self._patients, "get_family_members"):
+                    members = self._patients.get_family_members(phone, tenant_id=state.get("tenant_id", "default")) or []
+                elif hasattr(self._patients, "search_by_phone"):
+                    members = self._patients.search_by_phone(phone) or []
+                elif hasattr(self._patients, "find_by_phone"):
+                    members = self._patients.find_by_phone(phone) or []
+
+            unique_members = []
+            seen_names = set()
+            for m in members:
+                m_name = (m.get("Name") or m.get("patient_name") or m.get("full_name") or "").strip()
+                if m_name and m_name.lower() not in seen_names:
+                    seen_names.add(m_name.lower())
+                    unique_members.append(m)
+
+            digits = "".join(filter(str.isdigit, text))
+            is_new_patient_query = (
+                any(p in lowered_text for p in ("new", "naya", "naye", "new patient", "naya patient", "dusra", "kisi aur"))
+                or (digits and int(digits) == len(unique_members) + 1)
+            )
+
+            if is_new_patient_query:
+                draft = dict(state.get("appointment_draft") or {})
+                draft["is_new_patient"] = True
+                draft["relationship_type"] = "Other"
+                return {
+                    **state,
+                    "appointment_draft": draft,
+                    "appointment_step": "name",
+                    "pending_field": "name",
+                    "relationship_type": "Other",
+                    "ui": "",
+                    "response": "Kripya naye patient ka poora naam share karein (Patient's Full Name):",
+                }
+
+            selected_member = None
+            if digits:
+                idx = int(digits) - 1
+                if 0 <= idx < len(unique_members):
+                    selected_member = unique_members[idx]
+            if not selected_member:
+                for m in unique_members:
+                    m_name = (m.get("Name") or m.get("patient_name") or m.get("full_name") or "").strip()
+                    if m_name and (m_name.lower() in lowered_text or lowered_text in m_name.lower()):
+                        selected_member = m
+                        break
+
+            if selected_member:
+                pname = (selected_member.get("Name") or selected_member.get("patient_name") or selected_member.get("full_name") or "").strip()
+                pid = selected_member.get("Patient ID") or selected_member.get("patient_id") or ""
+                rel = selected_member.get("Relationship") or selected_member.get("relationship_type") or "Self"
+                pemail = selected_member.get("Email") or selected_member.get("patient_email") or ""
+
+                draft = dict(state.get("appointment_draft") or {})
+                draft["patient_name"] = pname
+                draft["patient_id"] = pid
+                draft["relationship_type"] = rel
+                if pemail:
+                    draft["patient_email"] = pemail
+
+                doc_name = draft.get("doctor_name") or state.get("doctor_name")
+                if doc_name and self._doctors:
+                    resolved = self._doctors.resolve_doctor(doc_name)
+                    doc_obj = resolved.get("doctor") if resolved.get("status") == "matched" else None
+                    if doc_obj:
+                        res = self._show_doctor_availability({
+                            **state,
+                            "patient_name": pname,
+                            "patient_id": pid,
+                            "patient_email": pemail or state.get("patient_email", ""),
+                            "relationship_type": rel,
+                            "appointment_draft": draft,
+                            "appointment_step": "pre_patient_date",
+                            "pending_field": "date",
+                        }, doc_obj)
+                        res["appointment_draft"] = draft
+                        return res
+
+                doctors = self._doctors.get_active_doctors() if self._doctors else []
+                disp = format_doctor_list_display(doctors, intro=f"Selected profile: *{pname}* ({rel}).\n\nWhich doctor would you like to consult?")
+                return {
+                    **state,
+                    "patient_name": pname,
+                    "patient_id": pid,
+                    "patient_email": pemail or state.get("patient_email", ""),
+                    "relationship_type": rel,
+                    "appointment_draft": draft,
+                    "appointment_step": "doctor",
+                    "pending_field": "doctor",
+                    "doctor_choices": doctors[:_MAX_BUTTON_DOCTORS],
+                    "ui": "doctor_select",
+                    "response": disp,
+                }
+
+            return {
+                **state,
+                "ui": "",
+                "response": f"Kripya diye gaye options me se number chunein (1 se {len(unique_members) + 1}) ya patient ka naam batayein.",
+            }
+
         if step == "name":
             cleaned = text.strip()
             lowered = cleaned.casefold()
@@ -864,6 +1012,19 @@ class GraphNodes:
                 return {**state, "appointment_step": "doctor", "ui": "", **self._show_doctor_selection(state)}
             if text.casefold() not in {"confirm", "yes", "book it"}:
                 return {**state, "response": "Please select Confirm or Change."}
+            from ..core.feature_flags import is_feature_enabled, FEATURE_FAMILY_BOOKING
+            if is_feature_enabled(flags, FEATURE_FAMILY_BOOKING, default=False) and self._patients and hasattr(self._patients, "has_duplicate_appointment"):
+                p_ident = state.get("patient_id") or state.get("patient_name")
+                d_name = state.get("doctor_name")
+                a_date = state.get("appointment_date")
+                if p_ident and d_name and a_date:
+                    if self._patients.has_duplicate_appointment(p_ident, d_name, a_date, tenant_id=state.get("tenant_id", "default")):
+                        return {
+                            **state,
+                            "ui": "main",
+                            "appointment_step": "complete",
+                            "response": f"⚠️ Notice: {state.get('patient_name', 'Patient')} ka Dr. {d_name} ke saath {a_date} ko already appointment booked hai.",
+                        }
             if not self._slots or not self._patients:
                 return {**state, "response": "Booking storage is not configured. Please contact the clinic team at " + self._support_phone + "."}
             try:
@@ -1123,7 +1284,7 @@ class GraphNodes:
             payment = self._payments.record_offline_payment(state["amount"]) if self._payments else {"success": True, "payment_method": "Offline", "payment_status": "Pending", "amount": state["amount"]}
             if not payment.get("success", False):
                 raise RuntimeError("Offline payment state could not be recorded")
-            record_result = self._patients.create_patient(PatientRecord(name=state["patient_name"], phone=state["patient_phone"], email=state["patient_email"], doctor=state["doctor_name"], appointment_date=state["appointment_date"], appointment_time=state["appointment_time"], token_no=token_no, amount=state["amount"], payment_method="Offline", payment_status="Pending", booking_status="Confirmed", status="Confirmed", patient_id=state["patient_id"]))
+            record_result = self._patients.create_patient(PatientRecord(name=state["patient_name"], phone=state["patient_phone"], email=state["patient_email"], doctor=state["doctor_name"], appointment_date=state["appointment_date"], appointment_time=state["appointment_time"], token_no=token_no, amount=state["amount"], payment_method="Offline", payment_status="Pending", booking_status="Confirmed", status="Confirmed", patient_id=state["patient_id"], relationship_type=state.get("relationship_type", "Self")))
             record = record_result.get("patient") if isinstance(record_result, dict) else record_result
             if isinstance(record_result, dict) and not record_result.get("success"):
                 raise RuntimeError(record_result.get("message", "Patient write failed"))
@@ -1267,6 +1428,7 @@ class GraphNodes:
                         booking_status="Confirmed",
                         status="Confirmed",
                         patient_id=patient_id,
+                        relationship_type=state.get("relationship_type", "Self"),
                     )
                 )
                 if isinstance(record_result, dict) and not record_result.get("success"):
@@ -2199,14 +2361,15 @@ class GraphNodes:
         if len(appts) == 1:
             a = appts[0]
             tok = a.get("token_no") or a.get("appointment_id", "")
-            doc = a.get("doctor", "Doctor")
+            raw_doc = str(a.get("doctor", "Doctor")).strip()
+            doc = raw_doc if raw_doc.lower().startswith("dr.") or raw_doc.lower().startswith("dr ") else f"Dr. {raw_doc}"
             dt = a.get("date", "")
             tm = a.get("time", "")
-            pname = a.get("patient_name", "")
+            pname = a.get("patient_name") or a.get("name", "")
             status = a.get("status", "Confirmed")
             response = (
                 f"📋 *Your Upcoming Appointments:*\n\n"
-                f"Ji haan! Aapka appointment Dr. {doc} ke saath scheduled hai:\n\n"
+                f"Ji haan! Aapka appointment {doc} ke saath scheduled hai:\n\n"
                 f"📅 *Date:* {dt}\n"
                 f"⏰ *Time:* {tm}\n"
                 f"🎫 *Token Number:* {tok}\n"
@@ -2226,8 +2389,13 @@ class GraphNodes:
         lines = ["📋 *Your Upcoming Appointments:*\n"]
         for idx, a in enumerate(appts, 1):
             tok = a.get("token_no") or a.get("appointment_id", "")
+            raw_doc = str(a.get("doctor", "Doctor")).strip()
+            doc_display = raw_doc if raw_doc.lower().startswith("dr.") or raw_doc.lower().startswith("dr ") else f"Dr. {raw_doc}"
+            pname = a.get("patient_name") or a.get("name", "")
+            pname_str = f"   👤 Patient: {pname}\n" if pname else ""
             lines.append(
-                f"{idx}. *Dr. {a.get('doctor', 'Doctor')}*\n"
+                f"{idx}. *{doc_display}*\n"
+                f"{pname_str}"
                 f"   📅 Date: {a.get('date')} | ⏰ Time: {a.get('time')}\n"
                 f"   🎫 Token: {tok} | Status: {a.get('status', 'Confirmed')}\n"
             )

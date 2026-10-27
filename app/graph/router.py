@@ -90,6 +90,9 @@ def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
             h in clean_text for h in ("human", "insaan", "reception", "receptionist", "staff", "person", "call me", "call back")
         ):
             return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": curr_step}
+    if curr_step == "choose_for_whom":
+        if not _is_draft_cancel_or_rejection(text):
+            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": "choose_for_whom"}
     if curr_step == "doctor":
         is_side_info = any(term in text for term in (
             "hours", "timing", "timings", "samay", "kab khulta", "khula", "band",

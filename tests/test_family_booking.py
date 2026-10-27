@@ -72,6 +72,23 @@ class FakePatientRepo:
     def get_family_members(self, phone, tenant_id="default"):
         return [r for r in self.records if r.get("Phone") == phone]
 
+    def has_duplicate_appointment(self, patient_id_or_name, doctor, date, tenant_id="default"):
+        for r in self.records:
+            matches_pat = (
+                r.get("Patient ID") == patient_id_or_name
+                or r.get("Name", "").strip().lower() == str(patient_id_or_name).strip().lower()
+            )
+            matches_doc = (
+                doctor.lower() in (r.get("Doctor") or "").lower()
+                or (r.get("Doctor") or "").lower() in doctor.lower()
+            )
+            matches_date = r.get("Appointment Date") == date
+            matches_status = (r.get("Status") or r.get("Booking Status") or "").lower() in ("confirmed", "pending")
+            if matches_pat and matches_doc and matches_date and matches_status:
+                return True
+        return False
+
+
 
 class FakeSlots:
     def get_upcoming_available_slots(self, doctor_name: str, doctor_id: str, today_str: str):
@@ -283,6 +300,84 @@ class FamilyBookingTests(unittest.TestCase):
         # Both Ramesh and Priya must be mentioned
         self.assertIn("Ramesh", resp)
         self.assertIn("Priya", resp)
+
+
+    # -------------------------------------------------------------------------
+    # 7. Duplicate Booking Guard
+    # -------------------------------------------------------------------------
+    def test_07_duplicate_booking_guard_blocks_double_booking(self):
+        """Golden Rule: A patient cannot double-book the same doctor on the same date."""
+        phone = "919999966666"
+        flags = {FEATURE_FAMILY_BOOKING: True}
+
+        # Ramesh already has an appointment with Dr. Arjun Mehta on 2026-11-01
+        self.patient_repo.records.append({
+            "Patient ID": "PAT-001",
+            "Name": "Ramesh Kumar",
+            "Phone": phone,
+            "Doctor": "Dr. Arjun Mehta",
+            "Appointment Date": "2026-11-01",
+            "Appointment Time": "10:00 AM",
+            "Status": "Confirmed",
+            "Booking Status": "Confirmed",
+        })
+
+        # Booking starts, user selects Ramesh
+        self._send("Book Appointment", phone=phone, flags=flags)
+        self._send("1", phone=phone, flags=flags) # selects Ramesh Kumar
+        self._send("Dr. Arjun Mehta", phone=phone, flags=flags) # selects doctor
+        self._send("2026-11-01", phone=phone, flags=flags) # selects date
+        self._send("1", phone=phone, flags=flags) # selects slot
+        r_confirm = self._send("confirm", phone=phone, flags=flags) # confirms
+
+        # Guard triggers and informs of existing booking
+        resp = r_confirm.get("response", "")
+        self.assertIn("already appointment booked", resp.lower())
+
+    # -------------------------------------------------------------------------
+    # 8. Database Tenant Isolation Check (Golden Rule #4)
+    # -------------------------------------------------------------------------
+    def test_08_database_tenant_isolation_for_contacts_and_family(self):
+        """Golden Rule #4: Contacts and family members in tenant A are isolated from tenant B."""
+        from app.db.session import get_session_factory, is_db_configured
+        if not is_db_configured():
+            self.skipTest("Database not configured")
+
+        session_factory = get_session_factory()
+        from app.repositories.postgres_crm_repositories import PostgresPatientRepository
+        from app.tools.patients import PatientRecord
+        from app.core.tenant import set_current_tenant, TenantContext
+        from app.db.models import Clinic
+
+        repo = PostgresPatientRepository(session_factory)
+        unique_phone = f"91999{uuid4().hex[:7]}"
+
+        with session_factory() as session:
+            for tid, tname in [("tenant-alpha", "Alpha Clinic"), ("tenant-beta", "Beta Clinic")]:
+                c = session.get(Clinic, tid)
+                if not c:
+                    session.add(Clinic(id=tid, name=tname, phone=f"91888{tid[-4:]}"))
+            session.commit()
+
+        from app.core.tenant import tenant_scope
+
+        # Create patient in tenant-alpha within clean scope
+        with tenant_scope("tenant-alpha"):
+            repo.create_patient(PatientRecord(
+                name="Rahul Alpha",
+                phone=unique_phone,
+                relationship_type="Self",
+            ))
+
+            # Query from tenant-alpha
+            members_alpha = repo.get_family_members(unique_phone, tenant_id="tenant-alpha")
+            self.assertEqual(len(members_alpha), 1)
+            self.assertEqual(members_alpha[0]["Name"], "Rahul Alpha")
+
+        # Query from tenant-beta: MUST return 0 members (strict tenant boundary!)
+        with tenant_scope("tenant-beta"):
+            members_beta = repo.get_family_members(unique_phone, tenant_id="tenant-beta")
+            self.assertEqual(len(members_beta), 0)
 
 
 if __name__ == "__main__":

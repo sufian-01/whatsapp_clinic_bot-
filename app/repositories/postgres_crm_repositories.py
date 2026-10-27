@@ -27,6 +27,7 @@ from ..db.models import (
     AppointmentSlot,
     AuditLog,
     Clinic,
+    Contact,
     Doctor,
     Invoice,
     Patient,
@@ -142,7 +143,26 @@ class PostgresPatientRepository:
         tenant_id = _resolve_tenant_id()
         with self.session_factory() as session:
             try:
-                # 1. Resolve or create Patient
+                # 1. Resolve or create Contact
+                phone_clean = patient.phone.strip() if patient.phone else ""
+                contact_row = None
+                if phone_clean:
+                    contact_row = session.execute(
+                        select(Contact).where(
+                            Contact.tenant_id == tenant_id,
+                            Contact.phone == phone_clean,
+                        )
+                    ).scalar_one_or_none()
+                    if not contact_row:
+                        contact_row = Contact(
+                            tenant_id=tenant_id,
+                            phone=phone_clean,
+                            full_name=patient.name.strip() if patient.name else None,
+                        )
+                        session.add(contact_row)
+                        session.flush()
+
+                # 2. Resolve or create Patient
                 pat_row = None
                 if patient.patient_id:
                     pat_row = session.execute(
@@ -152,11 +172,17 @@ class PostgresPatientRepository:
                         )
                     ).scalar_one_or_none()
 
+                rel_type = getattr(patient, "relationship_type", "Self") or "Self"
+                dob = getattr(patient, "date_of_birth", None)
+
                 if not pat_row:
                     pid = patient.patient_id or f"PAT-{uuid4().hex[:12].upper()}"
                     pat_row = Patient(
                         tenant_id=tenant_id,
                         patient_id=pid,
+                        contact_id=contact_row.id if contact_row else None,
+                        relationship_type=rel_type,
+                        date_of_birth=dob,
                         name=patient.name.strip(),
                         phone=patient.phone.strip(),
                         email=patient.email.strip() if patient.email else None,
@@ -167,6 +193,12 @@ class PostgresPatientRepository:
                     session.add(pat_row)
                     session.flush()
                 else:
+                    if contact_row and not pat_row.contact_id:
+                        pat_row.contact_id = contact_row.id
+                    if rel_type and rel_type != "Self":
+                        pat_row.relationship_type = rel_type
+                    if dob:
+                        pat_row.date_of_birth = dob
                     # Update fields if provided
                     if patient.name: pat_row.name = patient.name.strip()
                     if patient.phone: pat_row.phone = patient.phone.strip()
@@ -301,6 +333,72 @@ class PostgresPatientRepository:
         """Facade method returning dict format."""
         recs = self.find_by_phone(phone)
         return {"success": True, "patients": recs}
+
+    def search_by_phone(self, phone: str) -> List[Dict[str, str]]:
+        """Alias for find_by_phone."""
+        return self.find_by_phone(phone)
+
+    def get_family_members(self, phone: str, tenant_id: Optional[str] = None) -> List[Dict[str, str]]:
+        """List all family members associated with a contact phone number."""
+        t_id = tenant_id or _resolve_tenant_id()
+        clean_phone = phone.strip()
+        with self.session_factory() as session:
+            stmt = (
+                select(Patient)
+                .where(
+                    Patient.tenant_id == t_id,
+                    or_(
+                        Patient.phone == clean_phone,
+                        Patient.contact.has(Contact.phone == clean_phone),
+                    ),
+                )
+                .order_by(Patient.created_at.asc())
+            )
+            patients = session.execute(stmt).scalars().all()
+            members = []
+            seen_ids = set()
+            for p in patients:
+                if p.patient_id in seen_ids:
+                    continue
+                seen_ids.add(p.patient_id)
+                members.append({
+                    "Patient ID": p.patient_id,
+                    "Name": p.name,
+                    "Phone": p.phone,
+                    "Email": p.email or "",
+                    "Age": str(p.age or ""),
+                    "Gender": p.gender or "",
+                    "Relationship": p.relationship_type or "Self",
+                    "Date of Birth": p.date_of_birth or "",
+                })
+            return members
+
+    def has_duplicate_appointment(
+        self,
+        patient_id_or_name: str,
+        doctor_name: str,
+        appt_date: str,
+        tenant_id: Optional[str] = None,
+    ) -> bool:
+        """Check if an active appointment already exists for patient on date with doctor."""
+        t_id = tenant_id or _resolve_tenant_id()
+        with self.session_factory() as session:
+            stmt = (
+                select(Appointment)
+                .join(Patient, Appointment.patient_id == Patient.id)
+                .join(Doctor, Appointment.doctor_id == Doctor.id)
+                .where(
+                    Appointment.tenant_id == t_id,
+                    Appointment.appointment_date == appt_date,
+                    Appointment.booking_status.in_(["Confirmed", "Pending"]),
+                    or_(
+                        Patient.patient_id == patient_id_or_name,
+                        Patient.name.ilike(patient_id_or_name),
+                    ),
+                    Doctor.name.ilike(f"%{doctor_name}%"),
+                )
+            )
+            return session.execute(stmt).first() is not None
 
     def find_by_token(self, token_no: str) -> Optional[Dict[str, str]]:
         """Find patient booking matching token_no in PostgreSQL."""

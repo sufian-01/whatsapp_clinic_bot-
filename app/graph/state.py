@@ -96,6 +96,9 @@ class GraphState(TypedDict, total=False):
 
     # Memory and checkpointer context
     last_booked_appointment: dict
+    # Family Booking (Phase 2)
+    family_members: list[dict]
+    relationship_type: str
 
     # Feature Flags & Booking Guard V2
     feature_flags: dict

@@ -38,6 +38,8 @@ class PatientRecord:
     booking_status: str = "Pending"
     created_at: str = ""
     patient_id: str = ""
+    relationship_type: str = "Self"
+    date_of_birth: str = ""
 
 
 class PatientRepository:
