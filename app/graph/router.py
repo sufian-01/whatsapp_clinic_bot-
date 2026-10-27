@@ -82,6 +82,14 @@ def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
     # 3. Fast direct field validations (avoid unnecessary LLM calls for obvious answers)
     curr_step = state.get("appointment_step")
     import re
+    from ..core.feature_flags import is_feature_enabled, FEATURE_BOOKING_GUARD_V2
+    if curr_step and is_feature_enabled(state.get("feature_flags", {}), FEATURE_BOOKING_GUARD_V2, default=False):
+        if state.get("awaiting_idle_recovery"):
+            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": curr_step}
+        if clean_text in ("back", "peeche", "piche", "previous", "go back", "restart", "shuru se", "start over", "menu", "/menu") or any(
+            h in clean_text for h in ("human", "insaan", "reception", "receptionist", "staff", "person", "call me", "call back")
+        ):
+            return {**state, "intent": "appointment_flow", "active_flow": "appointment_booking", "pending_field": curr_step}
     if curr_step == "doctor":
         is_side_info = any(term in text for term in (
             "hours", "timing", "timings", "samay", "kab khulta", "khula", "band",

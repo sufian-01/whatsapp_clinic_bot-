@@ -446,6 +446,25 @@ class GraphNodes:
     def appointment_start(self, state: GraphState) -> GraphState:
         text = state.get("user_text", "")
         logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_start' (Booking Initiated) | text=%r", text)
+        flags = state.get("feature_flags", {})
+        from ..core.feature_flags import is_feature_enabled, FEATURE_BOOKING_GUARD_V2
+        guard_enabled = is_feature_enabled(flags, FEATURE_BOOKING_GUARD_V2, default=False)
+        if guard_enabled:
+            import time
+            state = {
+                **state,
+                "patient_name": "",
+                "patient_email": "",
+                "appointment_date": "",
+                "appointment_time": "",
+                "slot_id": "",
+                "doctor_id": "",
+                "doctor_name": "",
+                "step_attempts": {},
+                "last_activity_timestamp": time.time(),
+                "node_visit_count": 0,
+                "awaiting_idle_recovery": False,
+            }
 
         from .router import _is_existing_appointment_query
         if _is_existing_appointment_query(text):
@@ -559,6 +578,117 @@ class GraphNodes:
         step = state.get("appointment_step", "name")
         text = state.get("user_text", "").strip()
         logger.info(">>> [AGENT NODE TRIGGERED] 'appointment_progress' (Step: %s) | text=%r", step, text)
+        flags = state.get("feature_flags", {})
+        from ..core.feature_flags import is_feature_enabled, FEATURE_BOOKING_GUARD_V2
+        guard_enabled = is_feature_enabled(flags, FEATURE_BOOKING_GUARD_V2, default=False)
+        import time
+        now = time.time()
+        lowered_text = text.casefold()
+
+        if guard_enabled:
+            # 1. Loop Detector & Recursion Breaker (Stuck on the same step repeatedly)
+            last_step = state.get("last_step")
+            if last_step == step:
+                visit_count = state.get("node_visit_count", 0) + 1
+            else:
+                visit_count = 1
+            state["last_step"] = step
+            state["node_visit_count"] = visit_count
+            if visit_count > 6:
+                logger.warning("Recursion loop detected in appointment_progress (step=%s, count=%d), breaking gracefully.", step, visit_count)
+                support = state.get("support_phone") or self._support_phone or "6200126662"
+                return {
+                    **state,
+                    "node_visit_count": 0,
+                    "ui": "",
+                    "response": f"Hum aapki request process nahi kar paaye. Kripya clinic helpline par call karein: {support} ya 'menu' likhein.",
+                }
+
+            # 2. Idle Expiry & Recovery Handler
+            if state.get("awaiting_idle_recovery") and step not in ("", "complete"):
+                if any(w in lowered_text for w in ("1", "resume", "continue", "haan", "yes")):
+                    prompts = {
+                        "name": "Resuming your appointment booking. May I know the patient's full name?",
+                        "email": "Resuming your appointment booking. What email address should receive the invoice?",
+                        "phone": "Resuming your appointment booking. What phone number should we use for appointment updates?",
+                        "doctor": "Resuming your appointment booking. Which doctor would you like to consult?",
+                        "date": "Resuming your appointment booking. Which date would you prefer?",
+                        "slot": "Resuming your appointment booking. Which time slot would you like to select?",
+                    }
+                    return {
+                        **state,
+                        "awaiting_idle_recovery": False,
+                        "last_activity_timestamp": now,
+                        "ui": "",
+                        "response": prompts.get(step, "Resuming your appointment booking. Kripya apna input share karein."),
+                    }
+                elif any(w in lowered_text for w in ("2", "start new", "new", "naya", "restart")):
+                    return self.appointment_start({**state, "appointment_draft": {}, "awaiting_idle_recovery": False})
+                else:
+                    return {
+                        **state,
+                        "ui": "",
+                        "response": (
+                            "Kripya *1* reply karein to *Resume* previous booking, ya *2* to *Start New* booking."
+                        ),
+                    }
+
+            last_active = state.get("last_activity_timestamp")
+            if last_active and (now - float(last_active) > 1800) and step not in ("", "complete"):
+                return {
+                    **state,
+                    "awaiting_idle_recovery": True,
+                    "last_activity_timestamp": now,
+                    "ui": "",
+                    "response": (
+                        "Aapki pichli appointment booking adhuri reh gayi thi:\n\n"
+                        "1️⃣ Reply *1* to *Resume* previous booking\n"
+                        "2️⃣ Reply *2* to *Start New* booking"
+                    ),
+                }
+
+            state["last_activity_timestamp"] = now
+
+            # 3. Global Interrupt: Talk to a human / receptionist
+            if any(phrase in lowered_text for phrase in (
+                "human", "insaan", "reception", "receptionist", "staff", "person", "call me", "call back", "agent"
+            )):
+                support = state.get("support_phone") or self._support_phone or "6200126662"
+                return {
+                    **state,
+                    "ui": "",
+                    "response": f"Aap hamari clinic reception team se direct is number par call karke baat kar sakte hain: {support}. Humne aapka callback request note kar liya hai.",
+                }
+
+            # 4. Global Interrupt: Menu
+            if lowered_text in ("menu", "/menu", "start", "/start", "help", "/help"):
+                return self.greeting_node({**state, "ui": "welcome_menu"})
+
+            # 5. Global Interrupt: Restart
+            if any(w in lowered_text for w in ("restart", "shuru se", "start over", "reset")):
+                return self.appointment_start({**state, "appointment_draft": {}})
+
+            # 6. Global Interrupt: Back / Peeche
+            if any(w in lowered_text for w in ("back", "peeche", "piche", "previous", "go back")):
+                step_order = ["name", "email", "phone", "doctor", "date", "slot", "confirmation"]
+                if step in step_order:
+                    idx = step_order.index(step)
+                    prev_step = step_order[max(0, idx - 1)]
+                else:
+                    prev_step = "name"
+                prompts = {
+                    "name": "Sure, going back. May I know your name?",
+                    "email": "Going back to email. What email address should receive the invoice?",
+                    "phone": "Going back to phone. What phone number should we use?",
+                    "doctor": "Going back to doctor selection. Which doctor would you like to consult?",
+                    "date": "Going back to date selection. Which date would you prefer?",
+                }
+                return {
+                    **state,
+                    "appointment_step": prev_step,
+                    "pending_field": prev_step,
+                    "response": prompts.get(prev_step, "Sure, going back to previous step."),
+                }
 
         from .router import _is_existing_appointment_query
         # Guard: If user is asking about their existing appointment or arrival timing
@@ -609,7 +739,7 @@ class GraphNodes:
                 if _is_hindi_or_hinglish(cleaned):
                     return {**state, "ui": "", "response": "Kripya patient ka poora naam share karein (jaise 'Rahul Sharma') jinke liye appointment book karni hai."}
                 return {**state, "ui": "", "response": "Please provide the patient's full name to continue with the appointment."}
-            draft = dict(state.get("appointment_draft") or {})
+            draft = {"tenant_id": state.get("tenant_id", "default")} if guard_enabled else dict(state.get("appointment_draft") or {})
             draft["patient_name"] = cleaned
             return {
                 **state,
@@ -633,6 +763,16 @@ class GraphNodes:
                     "response": "Sure! What phone number should we use for your appointment updates?"
                 }
             if "@" not in text or "." not in text:
+                if guard_enabled:
+                    attempts = dict(state.get("step_attempts") or {})
+                    attempts["email"] = attempts.get("email", 0) + 1
+                    state["step_attempts"] = attempts
+                    if attempts["email"] >= 3:
+                        return {
+                            **state,
+                            "ui": "",
+                            "response": "Email format verify nahi ho pa raha hai. Agar aapke paas email nahi hai, to aap 'skip' likhkar aage badh sakte hain.",
+                        }
                 if _is_hindi_or_hinglish(text):
                     return {**state, "ui": "", "response": "Kripya ek valid email address share karein (jaise patient@example.com), ya 'skip' likhein."}
                 return {**state, "ui": "", "response": "Please provide a valid email address, or type 'skip' if you don't have an email."}
@@ -642,6 +782,17 @@ class GraphNodes:
             import re
             digits = re.sub(r"\D", "", text)
             if len(digits) < 5 or len(digits) > 15:
+                if guard_enabled:
+                    attempts = dict(state.get("step_attempts") or {})
+                    attempts["phone"] = attempts.get("phone", 0) + 1
+                    state["step_attempts"] = attempts
+                    if attempts["phone"] >= 3:
+                        support = state.get("support_phone") or self._support_phone or "6200126662"
+                        return {
+                            **state,
+                            "ui": "",
+                            "response": f"Phone number verify nahi ho pa raha hai. Kripya apna 10-digit number check karein ya clinic helpline par direct call karein: {support}.",
+                        }
                 if _is_hindi_or_hinglish(text) or any(w in text.casefold() for w in ("number", "du", "kiska", "kyu", "kyun", "phone")):
                     return {
                         **state,
@@ -890,6 +1041,7 @@ class GraphNodes:
         if not amount:
             return {**state, "response": "The consultation fee is unavailable, so I cannot continue this booking."}
         draft = dict(state.get("appointment_draft") or {})
+        draft["tenant_id"] = state.get("tenant_id", "default")
         draft["doctor_id"] = doctor.get("Doctor ID", "")
         draft["doctor_name"] = doctor.get("Doctor Name", "")
         draft["doctor_specialization"] = doctor.get("Specialization", "")

@@ -286,6 +286,113 @@ class BookingGuardV2Tests(unittest.TestCase):
         self.assertNotIn("patient_name", draft)
         self.assertEqual(r_new.get("patient_name"), "")
 
+    def test_11_idle_expiry_resume_selection(self):
+        """Replying '1' or 'resume' to idle prompt resumes the booking at current step."""
+        phone = "919999900091"
+        flags = {"booking_guard_v2": True}
+
+        self._send("Book Appointment", phone=phone, flags=flags)
+        self._send("Ramesh Kumar", phone=phone, flags=flags)
+
+        # Time passes > 30 mins
+        tid = build_whatsapp_thread_id("default", phone)
+        cfg = {"configurable": {"thread_id": tid}}
+        current_state = self.graph.get_state(cfg).values
+        current_state["last_activity_timestamp"] = time.time() - 2100
+        self.graph.update_state(cfg, current_state)
+
+        # Trigger idle prompt
+        r_prompt = self._send("hello", phone=phone, flags=flags)
+        self.assertIn("resume", r_prompt.get("response", "").lower())
+
+        # Reply '1' to resume
+        r_resume = self._send("1", phone=phone, flags=flags)
+        self.assertEqual(r_resume.get("appointment_step"), "email")
+        self.assertIn("email", r_resume.get("response", "").lower())
+        self.assertFalse(r_resume.get("awaiting_idle_recovery"))
+
+    def test_12_idle_expiry_start_new_selection(self):
+        """Replying '2' or 'start new' restarts fresh booking."""
+        phone = "919999900092"
+        flags = {"booking_guard_v2": True}
+
+        self._send("Book Appointment", phone=phone, flags=flags)
+        self._send("Ramesh Kumar", phone=phone, flags=flags)
+
+        # Time passes > 30 mins
+        tid = build_whatsapp_thread_id("default", phone)
+        cfg = {"configurable": {"thread_id": tid}}
+        current_state = self.graph.get_state(cfg).values
+        current_state["last_activity_timestamp"] = time.time() - 2100
+        self.graph.update_state(cfg, current_state)
+
+        self._send("hello", phone=phone, flags=flags)
+        r_new = self._send("2", phone=phone, flags=flags)
+        self.assertEqual(r_new.get("appointment_step"), "name")
+        self.assertIn("name", r_new.get("response", "").lower())
+
+    def test_13_loop_detector_breaks_gracefully(self):
+        """When user is repeatedly stuck on the same step (>6 times), loop detector breaks with helpline."""
+        phone = "919999900093"
+        flags = {"booking_guard_v2": True}
+
+        self._send("Book Appointment", phone=phone, flags=flags)
+        self._send("Ramesh Kumar", phone=phone, flags=flags)
+
+        # Send invalid input 6 times on email step
+        for i in range(6):
+            self._send(f"bad-input-{i}", phone=phone, flags=flags)
+
+        # 7th time triggers loop detector
+        r_break = self._send("bad-input-final", phone=phone, flags=flags)
+        self.assertIn("6200126662", r_break.get("response", ""))
+
+    def test_14_hinglish_interrupts(self):
+        """Hinglish variants ('peeche', 'shuru se', 'receptionist') trigger guard behavior."""
+        phone = "919999900094"
+        flags = {"booking_guard_v2": True}
+
+        # Test 'peeche'
+        self._send("Book Appointment", phone=phone, flags=flags)
+        self._send("Ramesh Kumar", phone=phone, flags=flags)
+        r_peeche = self._send("peeche", phone=phone, flags=flags)
+        self.assertEqual(r_peeche.get("appointment_step"), "name")
+
+        # Test 'shuru se'
+        self._send("Ramesh Kumar", phone=phone, flags=flags)
+        r_shuru = self._send("shuru se karo", phone=phone, flags=flags)
+        self.assertEqual(r_shuru.get("appointment_step"), "name")
+
+        # Test 'reception'
+        r_rec = self._send("receptionist ka number do", phone=phone, flags=flags)
+        self.assertIn("6200126662", r_rec.get("response", ""))
+
+    def test_15_full_booking_flow_succeeds_with_guard_v2(self):
+        """Complete 7-step booking runs smoothly without false trigger of loop detector."""
+        phone = "919999900095"
+        flags = {"booking_guard_v2": True}
+
+        r1 = self._send("Book Appointment", phone=phone, flags=flags)
+        self.assertEqual(r1.get("appointment_step"), "name")
+
+        r2 = self._send("Rahul Sharma", phone=phone, flags=flags)
+        self.assertEqual(r2.get("appointment_step"), "email")
+
+        r3 = self._send("rahul@example.com", phone=phone, flags=flags)
+        self.assertEqual(r3.get("appointment_step"), "phone")
+
+        r4 = self._send("9876543210", phone=phone, flags=flags)
+        self.assertEqual(r4.get("appointment_step"), "doctor")
+
+        r5 = self._send("Dr. Arjun Mehta", phone=phone, flags=flags)
+        self.assertEqual(r5.get("appointment_step"), "date")
+
+        r6 = self._send("2026-11-01", phone=phone, flags=flags)
+        self.assertEqual(r6.get("appointment_step"), "slot")
+
+        r7 = self._send("SLOT-001", phone=phone, flags=flags)
+        self.assertEqual(r7.get("appointment_step"), "confirmation")
+
 
 if __name__ == "__main__":
     unittest.main()

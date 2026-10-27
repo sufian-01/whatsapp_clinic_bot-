@@ -96,3 +96,11 @@ class GraphState(TypedDict, total=False):
 
     # Memory and checkpointer context
     last_booked_appointment: dict
+
+    # Feature Flags & Booking Guard V2
+    feature_flags: dict
+    step_attempts: dict
+    last_activity_timestamp: float
+    last_step: str
+    node_visit_count: int
+    awaiting_idle_recovery: bool
