@@ -1,16 +1,16 @@
 """Seed test appointment slots for all doctors in XYZ Clinic (default tenant).
 
-Generates 5 distinct slots per doctor per day across 11 upcoming days
-(2026-10-15 to 2026-10-25).
+Generates 5 distinct slots per doctor per day across 33 upcoming days
+(2026-10-29 to 2026-11-30, covering 1 Nov and the entire next month).
 """
 
 from datetime import date, datetime, timedelta, timezone
 import logging
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from app.db.models import AppointmentSlot, Doctor
+from app.db.models import AppointmentSlot, Clinic, Doctor
 from app.db.session import get_session_factory
 
 logging.basicConfig(level=logging.INFO)
@@ -75,9 +75,20 @@ DOCTOR_SCHEDULES = {
     ],
 }
 
+DEFAULT_TIMINGS = [
+    ("10:00 AM", "10:30 AM"),
+    ("11:00 AM", "11:30 AM"),
+    ("12:00 PM", "12:30 PM"),
+    ("04:00 PM", "04:30 PM"),
+    ("05:00 PM", "05:30 PM"),
+]
 
-def seed_slots(tenant_id: str = "default", num_days: int = 11) -> dict:
-    start_date = date(2026, 10, 15)
+
+def seed_slots(
+    tenant_id: str = "default",
+    start_date: date = date(2026, 10, 29),
+    num_days: int = 33,
+) -> dict:
     dates = [start_date + timedelta(days=i) for i in range(num_days)]
 
     factory = get_session_factory()
@@ -85,18 +96,35 @@ def seed_slots(tenant_id: str = "default", num_days: int = 11) -> dict:
     skipped_count = 0
 
     with factory() as session:
+        # Ensure clinic is named XYZ Clinic
+        clinic = session.get(Clinic, tenant_id)
+        if clinic:
+            clinic.name = "XYZ Clinic"
+            clinic.is_active = True
+        else:
+            clinic = Clinic(
+                id=tenant_id,
+                name="XYZ Clinic",
+                phone="6200126662",
+                is_active=True,
+            )
+            session.add(clinic)
+
         doctors = session.execute(
             select(Doctor).where(Doctor.tenant_id == tenant_id)
         ).scalars().all()
 
+        # Ensure all doctors in tenant are Active for testing
+        for d in doctors:
+            if d.status != "Active":
+                d.status = "Active"
+
         doc_map = {d.doctor_id: d for d in doctors}
         logger.info("Found %d doctors for tenant '%s'", len(doc_map), tenant_id)
 
-        for d_code, timings in DOCTOR_SCHEDULES.items():
-            doc = doc_map.get(d_code)
-            if not doc:
-                logger.warning("Doctor %s not found in tenant %s. Skipping.", d_code, tenant_id)
-                continue
+        # Loop through all doctors in the tenant
+        for d_code, doc in doc_map.items():
+            timings = DOCTOR_SCHEDULES.get(d_code, DEFAULT_TIMINGS)
 
             for target_date in dates:
                 d_str = target_date.isoformat()
@@ -136,10 +164,16 @@ def seed_slots(tenant_id: str = "default", num_days: int = 11) -> dict:
         session.commit()
 
     logger.info("Slot seeding complete: %d inserted, %d skipped", inserted_count, skipped_count)
-    return {"inserted": inserted_count, "skipped": skipped_count, "days": num_days}
+    return {
+        "inserted": inserted_count,
+        "skipped": skipped_count,
+        "days": num_days,
+        "start_date": str(start_date),
+        "end_date": str(dates[-1]),
+        "doctors_count": len(doc_map),
+    }
 
 
 if __name__ == "__main__":
     result = seed_slots()
     print("Seed result:", result)
-
