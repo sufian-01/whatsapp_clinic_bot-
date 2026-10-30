@@ -31,10 +31,10 @@ FEATURE_FAMILY_BOOKING = "family_booking"          # Contact-centric multi-patie
 SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
     "STARTER": {
         FEATURE_AI_AGENT: True,
-        FEATURE_BOOKING_GUARD_V2: False,
-        FEATURE_SMART_INTENT_V2: False,
-        FEATURE_RAG_V2: False,
-        FEATURE_FAMILY_BOOKING: False,
+        FEATURE_BOOKING_GUARD_V2: True,
+        FEATURE_SMART_INTENT_V2: True,
+        FEATURE_RAG_V2: True,
+        FEATURE_FAMILY_BOOKING: True,
         FEATURE_VOICE_INBOUND: False,
         FEATURE_VOICE_OUTBOUND: False,
         FEATURE_INTERACTIVE_LISTS: True,
@@ -54,9 +54,10 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_RESCHEDULING: True,
         FEATURE_RAG_KNOWLEDGE: True,
         FEATURE_REPORT_ENQUIRY: True,
-        FEATURE_BOOKING_GUARD_V2: False,
-        FEATURE_SMART_INTENT_V2: False,
-        FEATURE_RAG_V2: False,
+        FEATURE_BOOKING_GUARD_V2: True,
+        FEATURE_SMART_INTENT_V2: True,
+        FEATURE_RAG_V2: True,
+        FEATURE_FAMILY_BOOKING: True,
     },
     "ENTERPRISE": {
         FEATURE_AI_AGENT: True,
@@ -68,9 +69,10 @@ SUBSCRIPTION_PLANS: Dict[str, Dict[str, bool]] = {
         FEATURE_RESCHEDULING: True,
         FEATURE_RAG_KNOWLEDGE: True,
         FEATURE_REPORT_ENQUIRY: True,
-        FEATURE_BOOKING_GUARD_V2: False,
-        FEATURE_SMART_INTENT_V2: False,
-        FEATURE_RAG_V2: False,
+        FEATURE_BOOKING_GUARD_V2: True,
+        FEATURE_SMART_INTENT_V2: True,
+        FEATURE_RAG_V2: True,
+        FEATURE_FAMILY_BOOKING: True,
     },
 }
 

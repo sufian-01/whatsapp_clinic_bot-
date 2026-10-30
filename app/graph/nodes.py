@@ -172,7 +172,9 @@ class GraphNodes:
         availability_requested = self._is_availability_request(text)
         requested_specialization = resolve_specialization(text)
 
-        if named_doctor and (availability_requested or "recommend" in text.casefold()):
+        if named_doctor:
+            if state.get("appointment_step") and state.get("appointment_step") != "complete":
+                return self._accept_doctor(state, named_doctor)
             return self._show_doctor_availability(state, named_doctor, target_date)
         if selected and (availability_requested or target_date):
             return self._show_doctor_availability(state, selected, target_date)
@@ -744,9 +746,32 @@ class GraphNodes:
             return self.my_appointments_node({**state, "appointment_step": "complete"})
 
         # Guard: If user wants to exit / cancel booking flow
-        from .router import _is_draft_cancel_or_rejection
+        from .router import _is_draft_cancel_or_rejection, _is_greeting
         if _is_draft_cancel_or_rejection(text):
             return self.appointment_draft_cancel(state)
+
+        # Guard: If user sends greeting during active booking flow, acknowledge and guide nicely
+        if _is_greeting(text):
+            doc_name = state.get("doctor_name") or (state.get("appointment_draft") or {}).get("Doctor Name", "")
+            step_prompts = {
+                "name": "Kripya patient ka poora naam batayein.",
+                "doctor": "Kripya doctor ka naam batayein ya upar diye gaye options me se chunein.",
+                "date": f"{doc_name} ke sath appointment ke liye kripya date batayein (jaise 'kal', 'parso', ya '5 November')." if doc_name else "Kripya appointment ki date batayein (jaise 'kal', 'parso', ya '5 November').",
+                "pre_patient_date": f"{doc_name} ke sath appointment ke liye kripya date batayein (jaise 'kal', 'parso', ya '5 November')." if doc_name else "Kripya appointment ki date batayein.",
+                "slot": "Kripya upar diye gaye available slots me se apna pasandeeda time slot chunein.",
+                "pre_patient_slot": "Kripya apna pasandeeda time slot chunein.",
+                "phone": "Kripya apna 10-digit mobile number share karein.",
+                "email": "Kripya apna email address batayein (ya 'skip' likhein).",
+            }
+            guide = step_prompts.get(step, "Kripya apna agla detail batayein.")
+            clinic_n = state.get("clinic_name") or self._clinic_name
+            response = (
+                f"Namaste! {clinic_n} mein aapka swagat hai.\n"
+                f"Aapka appointment booking process chalu hai.\n\n"
+                f"{guide}\n\n"
+                f"*(Shuru se shuru karne ke liye 'restart' likhein, ya cancel karne ke liye 'cancel'.)*"
+            )
+            return {**state, "response": response}
 
         # Guard: If user provides or selects a doctor during active booking.
         # When asking for patient details (name, email, phone), NEVER intercept a bare name (like 'Habiba', 'Arjun', 'Sana')
@@ -1150,15 +1175,31 @@ class GraphNodes:
         if is_feature_enabled(flags, FEATURE_AI_AGENT, default=True) and is_question:
             from ..tools.rag_tool import search_clinic_knowledge
             retrieved = search_clinic_knowledge(self._rag, text, tenant_id=state.get("tenant_id")) if self._rag else []
-            if retrieved:
-                rag_answer = retrieved[0] if isinstance(retrieved[0], str) else str(retrieved[0])
+            if retrieved and self._llm:
+                try:
+                    context = "\n\n".join(
+                        chunk.get("text", str(chunk)) if isinstance(chunk, dict) else str(chunk)
+                        for chunk in retrieved[:2]
+                    )
+                    from ..prompt import load_system_prompt
+                    clinic_n = state.get("clinic_name") or self._clinic_name
+                    llm_ans = self._llm.answer(
+                        load_system_prompt(clinic_n, self._support_phone),
+                        text,
+                        context,
+                        history=[],
+                    )
+                    if llm_ans and isinstance(llm_ans, str) and len(llm_ans.strip()) > 5:
+                        rag_answer = llm_ans.strip()
+                except Exception:
+                    logger.warning("LLM synthesis in _handle_doctor_step failed, falling back to clinic helpline message")
 
         support_phone = state.get("support_phone") or self._support_phone
         if all_active:
             if rag_answer:
                 intro = f"{rag_answer}\n\n*(Aapka appointment booking chalu hai. Kripya niche diye gaye doctors me se chunein ya doctor ka naam batayein:)*"
             elif is_question:
-                intro = f"Hamare clinic ki information:\nTimings: 9:00 AM - 8:00 PM | Helpline: {support_phone}\n\nAap kis doctor ke sath appointment schedule karna chahte hain? Available doctors:"
+                intro = f"Hamare clinic ki information ke liye aap helpline par direct call kar sakte hain: {support_phone}\n\nAap kis doctor ke sath appointment schedule karna chahte hain? Available doctors:"
             else:
                 intro = f"'{text}' naam se doctor match nahi hue.\nKya aap doctor ka poora naam bata sakte hain?\n\nOur available doctors are:"
             response = format_doctor_list_display(all_active, intro=intro)
@@ -1245,6 +1286,54 @@ class GraphNodes:
             resolved = self._doctors.resolve_doctor(text)
             if resolved.get("status") == "matched" and resolved["doctor"].get("Doctor ID") != state.get("doctor_id"):
                 return self._accept_doctor(state, resolved["doctor"])
+
+        # Check if user is asking for another/different doctor or agreeing to check another doctor
+        lowered_t = text.casefold()
+        is_other_doc = any(phrase in lowered_t for phrase in (
+            "koi aur", "koi dusra", "kisi aur", "dusre", "dusra", "other doctor", "another doctor",
+            "anyone else", "change doctor", "different doctor", "dusra doctor", "aur koi", "aur doctor",
+            "yes check", "check another", "check other", "check doctor"
+        ))
+        if is_other_doc:
+            target = parse_date_from_text(text, self._clinic_today())
+            if not target.get("success"):
+                target = parse_date(text, self._clinic_today())
+            target_date = target.get("date") if target.get("success") else None
+            display_date = target.get("display_date", target_date or "")
+
+            if target_date and self._doctors and hasattr(self._doctors, "get_available_doctors_for_date"):
+                avail_docs = self._doctors.get_available_doctors_for_date(target_date, self._slots)
+                curr_id = state.get("doctor_id")
+                other_docs = [d for d in avail_docs if d.get("Doctor ID") != curr_id] if curr_id else avail_docs
+                candidates = other_docs or avail_docs
+                if candidates:
+                    intro = f"{display_date} ko hamare paas ye doctors uplabdh hain:\n\nAap kiske sath appointment schedule karna chahenge?"
+                    response = format_doctor_list_display(candidates, intro=intro)
+                    return {
+                        **state,
+                        "doctor_name": "",
+                        "doctor_id": "",
+                        "appointment_date": target_date,
+                        "appointment_step": "doctor",
+                        "pending_field": "doctor",
+                        "doctor_choices": candidates[:_MAX_BUTTON_DOCTORS],
+                        "ui": "doctor_select",
+                        "response": response,
+                    }
+                else:
+                    return {
+                        **state,
+                        "doctor_name": "",
+                        "doctor_id": "",
+                        "appointment_date": target_date,
+                        "appointment_step": "doctor",
+                        "pending_field": "doctor",
+                        "ui": "doctor_select",
+                        "response": f"{display_date} ko koi aur doctor uplabdh nahi hain. Aap kisi aur date par check kar sakte hain ya hamare available doctors dekh sakte hain.",
+                    }
+            elif self._doctors:
+                # No specific date provided, show all available doctors
+                return self._show_doctor_selection({**state, "doctor_name": "", "doctor_id": ""})
 
         date_result = parse_date(text, self._clinic_today())
         if not date_result["success"]:

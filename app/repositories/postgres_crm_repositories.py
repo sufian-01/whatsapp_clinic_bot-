@@ -36,7 +36,12 @@ from ..db.models import (
     PrescriptionItem,
     User,
 )
-from ..tools.doctors import _HEALTH_CONCERN_MAP, _SPECIALIZATION_ALIASES
+from ..tools.doctors import (
+    _HEALTH_CONCERN_MAP,
+    _SPECIALIZATION_ALIASES,
+    calculate_doctor_similarity,
+    normalize_doctor_text,
+)
 from ..tools.patients import PatientRecord
 from ..tools.prescription_pdf import PrescriptionPDFData, generate_prescription_pdf
 
@@ -694,16 +699,44 @@ class PostgresDoctorDirectory:
         return self.get_doctor_by_name(name)
 
     def get_doctors_by_specialization(self, specialization: str) -> List[Dict[str, str]]:
-        """Find doctors by specialization."""
-        tenant_id = _resolve_tenant_id()
-        with self.session_factory() as session:
-            docs = session.execute(
-                select(Doctor).where(
-                    Doctor.tenant_id == tenant_id,
-                    Doctor.specialization.ilike(f"%{specialization.strip()}%"),
-                )
-            ).scalars().all()
-            return [self._to_dict(d) for d in docs]
+        """Find doctors by specialization with root stem, alias, and bidirectional matching."""
+        if not specialization or not specialization.strip():
+            return []
+        normalized = specialization.casefold().strip()
+
+        stems = {normalized}
+        if len(normalized) >= 5:
+            stems.add(normalized[:5])
+        for canon, aliases in _SPECIALIZATION_ALIASES.items():
+            if normalized == canon or normalized in aliases or any(a in normalized for a in aliases):
+                stems.add(canon)
+                stems.update(aliases)
+                if len(canon) >= 5:
+                    stems.add(canon[:5])
+                for a in aliases:
+                    if len(a) >= 5:
+                        stems.add(a[:5])
+                break
+
+        active_doctors = self.get_active_doctors()
+        result = []
+        for d in active_doctors:
+            doc_spec = d.get("Specialization", "").casefold().strip()
+            if not doc_spec:
+                continue
+            matched = False
+            for stem in stems:
+                if (
+                    stem in doc_spec
+                    or doc_spec in stem
+                    or (len(stem) >= 5 and doc_spec.startswith(stem[:5]))
+                    or (len(doc_spec) >= 5 and stem.startswith(doc_spec[:5]))
+                ):
+                    matched = True
+                    break
+            if matched:
+                result.append(d)
+        return result
 
     def get_doctor_schedule(self, name: str) -> Optional[Dict[str, str]]:
         """Return schedule info for a doctor."""
@@ -731,8 +764,6 @@ class PostgresDoctorDirectory:
                 "candidates": [],
             }
 
-        norm_text = text.strip().casefold()
-
         # 0. Doctor ID direct match (e.g. DOC-001 or doctor:DOC-001)
         raw_upper = text.strip().upper()
         clean_id = raw_upper.removeprefix("DOCTOR:").removeprefix("DOC:").strip()
@@ -748,11 +779,23 @@ class PostgresDoctorDirectory:
                     "candidates": [d],
                 }
 
+        # Clean punctuation and normalize
+        clean_input = re.sub(r"[^\w\s]", " ", text).strip()
+        norm_text = " ".join(clean_input.casefold().split())
+        q_clean = normalize_doctor_text(text)
+
         # 1. Exact or partial doctor name match
         for d in active_doctors:
             doc_name = d["Doctor Name"].casefold()
             clean_name = doc_name.removeprefix("dr.").removeprefix("dr ").strip()
-            if norm_text in doc_name or norm_text in clean_name or doc_name in norm_text:
+            d_norm = normalize_doctor_text(d["Doctor Name"])
+            if (
+                norm_text in doc_name
+                or norm_text in clean_name
+                or doc_name in norm_text
+                or (q_clean and q_clean == d_norm)
+                or (q_clean and len(q_clean) >= 4 and (q_clean in d_norm or d_norm in q_clean))
+            ):
                 return {
                     "status": "matched",
                     "doctor": d,
@@ -762,31 +805,38 @@ class PostgresDoctorDirectory:
                     "candidates": [d],
                 }
 
-        # 2. Fuzzy name match
-        best_match = None
-        best_ratio = 0.0
-        for d in active_doctors:
-            doc_name = d["Doctor Name"].casefold()
-            clean_name = doc_name.removeprefix("dr.").removeprefix("dr ").strip()
-            r = max(SequenceMatcher(None, norm_text, doc_name).ratio(), SequenceMatcher(None, norm_text, clean_name).ratio())
-            if r > best_ratio and r >= 0.70:
-                best_ratio = r
-                best_match = d
+        # 2. Fuzzy name match using calculate_doctor_similarity & SequenceMatcher
+        scored = [
+            (d, calculate_doctor_similarity(text, d.get("Doctor Name", "")))
+            for d in active_doctors
+        ]
+        scored.sort(key=lambda item: item[1], reverse=True)
 
-        if best_match:
+        if scored and scored[0][1] >= 0.70:
+            best_doc, best_score = scored[0]
+            if len(scored) > 1 and scored[1][1] >= 0.70 and (best_score - scored[1][1]) < 0.08:
+                ambiguous = [item[0] for item in scored if item[1] >= 0.70]
+                return {
+                    "status": "ambiguous",
+                    "doctor": None,
+                    "matches": ambiguous,
+                    "match_type": "doctor",
+                    "matched": None,
+                    "candidates": ambiguous,
+                }
             return {
                 "status": "matched",
-                "doctor": best_match,
-                "matches": [best_match],
+                "doctor": best_doc,
+                "matches": [best_doc],
                 "match_type": "doctor",
-                "matched": best_match,
-                "candidates": [best_match],
+                "matched": best_doc,
+                "candidates": [best_doc],
             }
 
         # 3. Specialization match
         for spec_key, aliases in _SPECIALIZATION_ALIASES.items():
-            if spec_key in norm_text or any(a in norm_text for a in aliases):
-                matching_docs = [d for d in active_doctors if spec_key in d["Specialization"].casefold()]
+            if spec_key in norm_text or any(a in norm_text.split() or f" {a} " in f" {norm_text} " for a in aliases):
+                matching_docs = self.get_doctors_by_specialization(spec_key)
                 if matching_docs:
                     return {
                         "status": "matched" if len(matching_docs) == 1 else "ambiguous",
@@ -801,7 +851,7 @@ class PostgresDoctorDirectory:
         # 4. Symptom / Health concern match
         for spec_key, keywords in _HEALTH_CONCERN_MAP.items():
             if any(kw in norm_text for kw in keywords):
-                matching_docs = [d for d in active_doctors if spec_key in d["Specialization"].casefold()]
+                matching_docs = self.get_doctors_by_specialization(spec_key)
                 if matching_docs:
                     return {
                         "status": "matched" if len(matching_docs) == 1 else "ambiguous",

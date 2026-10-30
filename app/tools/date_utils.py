@@ -180,7 +180,7 @@ def parse_date_from_text(value: str, today: date | None = None) -> dict:
     return parse_date(parsed.isoformat(), base)
 
 
-_INVALID_DATE_MESSAGE = "Maaf kijiye, aap kis date ki baat kar rahe hain?\nAap date jaise 30 September bhi bata sakte hain."
+_INVALID_DATE_MESSAGE = "Maaf kijiye, main date samajh nahi paya.\nAap date jaise 'kal', 'parso', ya koi specific date (jaise 5 November) bata sakte hain."
 
 
 def _invalid(message: str | None = None) -> dict:
