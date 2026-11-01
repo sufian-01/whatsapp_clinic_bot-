@@ -36,7 +36,9 @@ def _is_draft_cancel_or_rejection(text: str) -> bool:
         "nahi mang raha", "nahi maang raha", "nahi bola", "nahi bol raha", "ni kr rha", "nahi kar raha",
         "appointment nahi", "appoinment nahi", "no appointment", "nahi chahiye appointment",
         "nahi karwana", "nahi book karna", "nahi book karni", "khatam karo", "band karo",
-        "stop", "exit", "quit", "abort", "cancel kar", "cancel karo", "nahi lena", "nahi leni",
+        "stop", "exit", "quit", "abort", "cancel kar", "cancel karo", "cancel kardo", "cancel kr do",
+        "cancel karna", "cancel karni", "cancel appointment", "cancel appoinment", "cancel my appointment",
+        "nahi lena", "nahi leni", "radd karo", "radd kar do",
     )
     if any(p in lowered for p in rejection_phrases):
         return True
@@ -78,6 +80,30 @@ def classify_intent(state: dict, llm: Optional[Any] = None) -> dict:
             }
         logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_cancel'", text)
         return {**state, "intent": "appointment_cancel"}
+
+    # 2b. Start New Appointment / Restart request (HIGHEST PRIORITY when user wants a fresh booking)
+    is_new_booking_request = any(phrase in clean_text for phrase in (
+        "new appointment", "new appoinment", "naya appointment", "naye appointment", "nayi appointment",
+        "start new", "start over", "restart", "shuru se", "reset", "fresh appointment",
+        "new booking", "naya booking", "nayi booking", "start again", "start fresh",
+        "dobara shuru", "phir se shuru", "naya shuru", "i want new"
+    )) or (
+        any(w in clean_text for w in ("new", "naya", "fresh", "restart", "reset"))
+        and any(w in clean_text for w in ("appointment", "appoinment", "booking", "slot", "shuru"))
+    )
+    if is_new_booking_request:
+        logger.info("[ROUTER] User text: '%s' -> Classified Intent: 'appointment_booking' (fresh restart)", text)
+        return {
+            **state,
+            "intent": "appointment_booking",
+            "appointment_step": "",
+            "pending_field": "",
+            "appointment_draft": {},
+            "doctor_name": "",
+            "doctor_id": "",
+            "doctor_choices": [],
+            "active_flow": "appointment_booking",
+        }
 
     # 3. Fast direct field validations (avoid unnecessary LLM calls for obvious answers)
     curr_step = state.get("appointment_step")

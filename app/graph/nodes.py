@@ -750,6 +750,26 @@ class GraphNodes:
         if _is_draft_cancel_or_rejection(text):
             return self.appointment_draft_cancel(state)
 
+        # Guard: If user wants to start a fresh / new booking or restart
+        is_new_booking = any(phrase in lowered_text for phrase in (
+            "new appointment", "new appoinment", "naya appointment", "naye appointment", "nayi appointment",
+            "start new", "start over", "restart", "shuru se", "reset", "fresh appointment",
+            "new booking", "naya booking", "nayi booking", "start again", "start fresh", "phir se shuru", "i want new"
+        )) or (
+            any(w in lowered_text for w in ("new", "naya", "fresh", "restart", "reset"))
+            and any(w in lowered_text for w in ("appointment", "appoinment", "booking", "slot", "shuru"))
+        )
+        if is_new_booking:
+            return self.appointment_start({
+                **state,
+                "appointment_draft": {},
+                "appointment_step": "",
+                "pending_field": "",
+                "doctor_name": "",
+                "doctor_id": "",
+                "doctor_choices": [],
+            })
+
         # Guard: If user sends greeting during active booking flow, acknowledge and guide nicely
         if _is_greeting(text):
             doc_name = state.get("doctor_name") or (state.get("appointment_draft") or {}).get("Doctor Name", "")
@@ -1689,8 +1709,12 @@ class GraphNodes:
             return ""
         resume_ctx = state.get("resume_context")
         pending_target = (resume_ctx.get("pending_field") if resume_ctx else None) or active_step
-        doc_name = state.get("doctor_name", "")
-        doc_hint = f" with Dr. {doc_name}" if doc_name else ""
+        doc_name = state.get("doctor_name", "").strip()
+        if doc_name:
+            clean_name = doc_name if doc_name.lower().startswith("dr") else f"Dr. {doc_name}"
+            doc_hint = f" with {clean_name}"
+        else:
+            doc_hint = ""
         step_prompt_hi = "Kripya apna agla detail batayein."
         step_prompt_en = "Please continue whenever you are ready."
         if pending_target == "doctor":

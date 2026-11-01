@@ -45,6 +45,11 @@ EOF
     python app/scripts/seed_initial_data.py || {
         echo "[STARTUP] Warning: Initial data seed encountered an issue. Continuing server startup..."
     }
+
+    echo "[STARTUP] Seeding test slots across upcoming dates..."
+    python app/scripts/seed_test_slots.py || {
+        echo "[STARTUP] Warning: Slot seed encountered an issue. Continuing server startup..."
+    }
 else
     echo "[STARTUP] Running in standalone local storage mode (no PostgreSQL DATABASE_URL detected)."
 fi

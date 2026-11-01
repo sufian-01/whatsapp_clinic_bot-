@@ -122,5 +122,36 @@ class LiveChatIssuesTests(unittest.TestCase):
         self.assertIn("Namaste", resp)
         self.assertIn("Dr. sufian", resp)
 
+    def test_issue6_want_new_appointment_resets_and_starts_fresh(self):
+        """Image 6: When in active booking, saying 'i want new appoinment' or 'mujhe new appointment leni h' MUST start fresh."""
+        self._send("Book Appointment")
+        self._send("Dr. sufian")
+        # Currently at date step with Dr. Sufian
+        r = self._send("i want new appoinment")
+        resp = r.get("response", "")
+        self.assertNotIn("kis date ki baat kar rahe hain", resp)
+        self.assertNotIn("30 September", resp)
+        # Should ask for name or start fresh
+        self.assertTrue("name" in resp.lower() or "patient" in resp.lower() or "doctor" in resp.lower())
+
+        # Test Hinglish: 'mujhe new appointment leni h'
+        self._send("Dr. sufian")
+        r2 = self._send("mujhe new appointment leni h")
+        resp2 = r2.get("response", "")
+        self.assertNotIn("kis date ki baat kar rahe hain", resp2)
+        self.assertNotIn("30 September", resp2)
+        self.assertTrue("name" in resp2.lower() or "patient" in resp2.lower() or "doctor" in resp2.lower())
+
+    def test_issue7_reminder_no_duplicate_dr_dr(self):
+        """Image 6: Continuation reminder must never say 'Dr. Dr. sufian'."""
+        state = {
+            "appointment_step": "date",
+            "doctor_name": "Dr. sufian",
+            "user_text": "hello",
+        }
+        reminder = self.nodes._build_booking_continuation_reminder(state)
+        self.assertNotIn("Dr. Dr.", reminder)
+        self.assertIn("Dr. sufian", reminder)
+
 if __name__ == "__main__":
     unittest.main()
