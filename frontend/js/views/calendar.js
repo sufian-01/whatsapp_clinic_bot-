@@ -126,7 +126,6 @@ export const CalendarView = {
              (docNorm && qNorm.includes(docNorm));
     });
   },
-  },
 
   navigate(direction) {
     if (this.viewMode === "month") {
