@@ -12,6 +12,7 @@ Verifies:
 """
 
 import unittest
+from datetime import date
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -141,6 +142,7 @@ class FamilyBookingTests(unittest.TestCase):
             support_phone="6200126662",
             patients=self.patient_repo,
             slots=self.slots,
+            today_provider=lambda: date(2026, 10, 30),
         )
         self.checkpointer = MemorySaver()
         self.graph = build_graph(self.nodes, checkpointer=self.checkpointer)

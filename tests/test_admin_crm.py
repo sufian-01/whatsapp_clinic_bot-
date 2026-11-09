@@ -395,6 +395,61 @@ class AdminCrmTests(unittest.TestCase):
         res_js = self.client.get("/admin/js/app.js")
         self.assertEqual(res_js.status_code, 200)
 
+    # 9. Calendar Events Endpoint & Doctor Filter
+    def test_calendar_events_and_doctor_filter_variations(self):
+        token = self._login()
+        # All doctors
+        res = self.client.get(
+            "/api/admin/calendar?start_date=2026-09-01&end_date=2026-10-31",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(res.status_code, 200)
+        events = res.json()
+        self.assertEqual(len(events), 2)
+
+        # Filter by full name with Dr. prefix
+        res_arjun = self.client.get(
+            "/api/admin/calendar?start_date=2026-09-01&end_date=2026-10-31&doctor=Dr.+Arjun+Mehta",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(res_arjun.status_code, 200)
+        arjun_events = res_arjun.json()
+        self.assertEqual(len(arjun_events), 1)
+        self.assertEqual(arjun_events[0]["doctor"], "Dr. Arjun Mehta")
+
+        # Filter by variation without 'Dr.' and lowercase
+        res_clean = self.client.get(
+            "/api/admin/calendar?start_date=2026-09-01&end_date=2026-10-31&doctor=arjun",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        self.assertEqual(res_clean.status_code, 200)
+        self.assertEqual(len(res_clean.json()), 1)
+
+    # 10. Frontend UI Element Integrity Tests
+    def test_frontend_ui_spec_compliance(self):
+        with open("frontend/index.html", "r", encoding="utf-8") as f:
+            index_html = f.read()
+        # Doctor accounts link removed from sidebar
+        self.assertNotIn('<a href="#doctor-accounts" class="nav-item"', index_html)
+
+        with open("frontend/js/views/dashboard.js", "r", encoding="utf-8") as f:
+            dash_js = f.read()
+        # Register Patient button removed from dashboard view header
+        self.assertNotIn('id="quick-add-patient-btn"', dash_js)
+        # Dashboard Refresh button present
+        self.assertIn('id="dashboard-refresh-btn"', dash_js)
+
+        with open("frontend/js/views/patients.js", "r", encoding="utf-8") as f:
+            patients_js = f.read()
+        # Cancel button in Add Patient modal properly identified
+        self.assertIn('id="cancel-add-patient-btn"', patients_js)
+        self.assertIn('data-dismiss="modal"', patients_js)
+
+        with open("frontend/js/views/settings.js", "r", encoding="utf-8") as f:
+            settings_js = f.read()
+        # Doctor accounts section embedded in settings
+        self.assertIn('id="settings-doctor-accounts-section"', settings_js)
+
 
 if __name__ == "__main__":
     unittest.main()

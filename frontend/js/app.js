@@ -408,6 +408,10 @@ class App {
         viewKey = "dashboard";
         window.location.hash = "#dashboard";
         return;
+      } else if (rawHash === "doctor-accounts") {
+        viewKey = "settings";
+        window.location.hash = "#settings";
+        return;
       } else {
         viewKey = VIEWS[rawHash] ? rawHash : "dashboard";
       }

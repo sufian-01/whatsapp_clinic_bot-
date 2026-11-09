@@ -31,9 +31,6 @@ export const DashboardView = {
           <button id="quick-book-appt-btn" class="btn btn-primary btn-sm">
             <span>➕</span> Book Appointment
           </button>
-          <button id="quick-add-patient-btn" class="btn btn-secondary btn-sm">
-            <span>👤</span> Register Patient
-          </button>
           <button id="dashboard-refresh-btn" class="btn btn-secondary btn-sm" title="Refresh Live Data">
             <span>🔄</span> Refresh
           </button>
@@ -159,9 +156,24 @@ export const DashboardView = {
   },
 
   bindEvents() {
-    document.getElementById("dashboard-refresh-btn")?.addEventListener("click", () => this.loadData());
+    const refreshBtn = document.getElementById("dashboard-refresh-btn");
+    refreshBtn?.addEventListener("click", async () => {
+      if (refreshBtn.disabled) return;
+      refreshBtn.disabled = true;
+      const originalHtml = refreshBtn.innerHTML;
+      refreshBtn.innerHTML = `<span style="display:inline-block; animation:spin 0.8s linear infinite;">🔄</span> Refreshing...`;
+      try {
+        await this.loadData(true);
+        showToast("Dashboard refreshed successfully", "success");
+      } catch (err) {
+        showToast("Failed to refresh dashboard: " + (err.message || String(err)), "error");
+      } finally {
+        refreshBtn.disabled = false;
+        refreshBtn.innerHTML = originalHtml;
+      }
+    });
+
     document.getElementById("quick-book-appt-btn")?.addEventListener("click", () => AppointmentsView.openBookAppointmentModal());
-    document.getElementById("quick-add-patient-btn")?.addEventListener("click", () => PatientsView.openAddPatientModal());
 
     // Auto-refresh when an appointment or patient is created/updated
     window.addEventListener("crm:appointment-changed", () => {
@@ -221,19 +233,20 @@ export const DashboardView = {
     return out;
   },
 
-  async loadData() {
+  async loadData(force = false) {
+    const opts = force ? { noDedupe: true } : {};
     // Run all 4 independent data sections concurrently without blocking each other
     await Promise.allSettled([
-      this.loadMetrics(),
-      this.loadTodayAppointments(),
-      this.loadRecentAppointments(),
-      this.loadRecentPatients(),
+      this.loadMetrics(opts),
+      this.loadTodayAppointments(opts),
+      this.loadRecentAppointments(opts),
+      this.loadRecentPatients(opts),
     ]);
   },
 
-  async loadMetrics() {
+  async loadMetrics(opts = {}) {
     try {
-      const stats = await API.getDashboardStats();
+      const stats = await API.getDashboardStats(undefined, opts);
       this.renderMetrics(stats);
     } catch (err) {
       console.error("Dashboard stats failed to load:", err);
@@ -337,9 +350,9 @@ export const DashboardView = {
     }
   },
 
-  async loadTodayAppointments() {
+  async loadTodayAppointments(opts = {}) {
     try {
-      const appts = await API.getTodayAppointments();
+      const appts = await API.getTodayAppointments(undefined, opts);
       this.renderTodayAppointments(appts || []);
     } catch (err) {
       console.error("Today's appointments failed to load:", err);
@@ -417,9 +430,9 @@ export const DashboardView = {
     });
   },
 
-  async loadRecentAppointments() {
+  async loadRecentAppointments(opts = {}) {
     try {
-      const res = await API.listAppointments({ page: 1, page_size: 6 });
+      const res = await API.listAppointments({ page: 1, page_size: 6 }, opts);
       this.renderRecentAppointments(res?.appointments || []);
     } catch (err) {
       console.error("Recent appointments failed to load:", err);
@@ -476,9 +489,9 @@ export const DashboardView = {
     }).join("");
   },
 
-  async loadRecentPatients() {
+  async loadRecentPatients(opts = {}) {
     try {
-      const patients = await API.getRecentPatients(6);
+      const patients = await API.getRecentPatients(6, opts);
       this.renderRecentPatients(patients || []);
     } catch (err) {
       console.error("Recent patients failed to load:", err);

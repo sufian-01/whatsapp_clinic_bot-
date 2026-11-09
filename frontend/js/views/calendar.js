@@ -20,6 +20,11 @@ export const CalendarView = {
     await this.loadCalendarData();
   },
 
+  async loadData() {
+    await this.loadDoctorsForFilter();
+    await this.loadCalendarData();
+  },
+
   render() {
     this.container.innerHTML = `
       <div class="calendar-controls">
@@ -81,18 +86,46 @@ export const CalendarView = {
       const doctors = await API.listDoctors();
       const select = document.getElementById("cal-doctor-filter");
       if (!select || !doctors) return;
-      doctors.forEach((d) => {
-        const name = d["Doctor Name"] || d.name;
-        if (name) {
+      const currentVal = this.doctorFilter || select.value || "";
+      select.innerHTML = '<option value="">All Doctors</option>';
+      const list = Array.isArray(doctors) ? doctors : (doctors.doctors || []);
+      const seen = new Set();
+      list.forEach((d) => {
+        const name = (d["Doctor Name"] || d.name || d.doctor_name || "").trim();
+        if (name && !seen.has(name)) {
+          seen.add(name);
           const opt = document.createElement("option");
           opt.value = name;
           opt.textContent = name;
+          if (name === currentVal) opt.selected = true;
           select.appendChild(opt);
         }
       });
+      if (currentVal && seen.has(currentVal)) {
+        select.value = currentVal;
+      }
     } catch (e) {
-      // ignore
+      console.warn("Failed to load doctors list for calendar filter:", e);
     }
+  },
+
+  normalizeDoc(name) {
+    if (!name) return "";
+    return name.toLowerCase().replace(/^dr\.?\s*/i, "").replace(/[^\w\s]/g, "").trim();
+  },
+
+  getFilteredEvents() {
+    if (!this.doctorFilter) return this.events;
+    const qNorm = this.normalizeDoc(this.doctorFilter);
+    return this.events.filter((ev) => {
+      const doc = ev.doctor || "";
+      const docNorm = this.normalizeDoc(doc);
+      return doc.toLowerCase().includes(this.doctorFilter.toLowerCase()) ||
+             this.doctorFilter.toLowerCase().includes(doc.toLowerCase()) ||
+             (qNorm && docNorm.includes(qNorm)) ||
+             (docNorm && qNorm.includes(docNorm));
+    });
+  },
   },
 
   navigate(direction) {
@@ -196,8 +229,8 @@ export const CalendarView = {
     }
 
     const todayStr = this.formatIso(new Date());
-
     const daysHeaders = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const filteredEvents = this.getFilteredEvents();
 
     container.innerHTML = `
       <div class="calendar-month-grid">
@@ -206,15 +239,21 @@ export const CalendarView = {
           const iso = this.formatIso(d);
           const isOtherMonth = d.getMonth() !== month;
           const isToday = iso === todayStr;
-          const dayEvents = this.events.filter((e) => e.date === iso);
+          const dayEvents = filteredEvents.filter((e) => e.date === iso);
 
           return `
             <div class="calendar-cell ${isOtherMonth ? 'other-month' : ''} ${isToday ? 'today' : ''}">
               <span class="calendar-day-number">${d.getDate()}</span>
               <div class="calendar-events-container">
                 ${dayEvents.map((ev) => `
-                  <div class="calendar-event-pill status-${ev.status.toLowerCase()}" data-id="${escapeHtml(ev.id)}" title="${escapeHtml(ev.title)} (${escapeHtml(ev.time)})">
-                    <strong>${escapeHtml(ev.time)}</strong> ${escapeHtml(ev.patient_name)}
+                  <div class="calendar-event-pill status-${ev.status.toLowerCase()}" data-id="${escapeHtml(ev.id)}" title="${escapeHtml(ev.title)} • ${escapeHtml(ev.doctor || '')} (${escapeHtml(ev.time)})" style="display:flex; flex-direction:column; gap:2px; padding:4px 6px; margin-bottom:4px; border-radius:4px; cursor:pointer;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px; overflow:hidden;">
+                      <strong style="font-size:11px;">${escapeHtml(ev.time)}</strong>
+                      <span style="font-size:11px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(ev.patient_name)}</span>
+                    </div>
+                    <div style="font-size:10px; color:var(--text-secondary); opacity:0.9; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:2px;">
+                      <span>👨‍⚕️</span> <span>${escapeHtml(ev.doctor || 'Unassigned')}</span>
+                    </div>
                   </div>
                 `).join("")}
               </div>
@@ -243,6 +282,7 @@ export const CalendarView = {
     }
 
     const todayStr = this.formatIso(new Date());
+    const filteredEvents = this.getFilteredEvents();
 
     container.innerHTML = `
       <div class="calendar-month-grid" style="grid-template-columns: repeat(7, 1fr);">
@@ -250,7 +290,7 @@ export const CalendarView = {
           const iso = this.formatIso(d);
           const isToday = iso === todayStr;
           const dayName = d.toLocaleDateString("en-IN", { weekday: "short" });
-          const dayEvents = this.events.filter((e) => e.date === iso);
+          const dayEvents = filteredEvents.filter((e) => e.date === iso);
 
           return `
             <div class="calendar-cell ${isToday ? 'today' : ''}" style="min-height: 380px;">
@@ -260,9 +300,12 @@ export const CalendarView = {
               </div>
               <div class="calendar-events-container">
                 ${dayEvents.map((ev) => `
-                  <div class="calendar-event-pill status-${ev.status.toLowerCase()}" data-id="${escapeHtml(ev.id)}" style="padding: 4px 6px;">
-                    <div><strong>${escapeHtml(ev.time)}</strong> - ${escapeHtml(ev.patient_name)}</div>
-                    <div style="font-size:10px; opacity:0.85;">${escapeHtml(ev.doctor)}</div>
+                  <div class="calendar-event-pill status-${ev.status.toLowerCase()}" data-id="${escapeHtml(ev.id)}" style="padding: 6px; margin-bottom: 4px; border-radius: 4px; cursor: pointer;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:4px;">
+                      <strong>${escapeHtml(ev.time)}</strong>
+                      <span style="font-size:11px; font-weight:600;">${escapeHtml(ev.patient_name)}</span>
+                    </div>
+                    <div style="font-size:10px; opacity:0.9; margin-top:2px;">👨‍⚕️ ${escapeHtml(ev.doctor || 'Unassigned')}</div>
                   </div>
                 `).join("")}
               </div>
@@ -282,7 +325,8 @@ export const CalendarView = {
 
   renderDayView(container) {
     const iso = this.formatIso(this.currentDate);
-    const dayEvents = this.events.filter((e) => e.date === iso);
+    const filteredEvents = this.getFilteredEvents();
+    const dayEvents = filteredEvents.filter((e) => e.date === iso);
 
     container.innerHTML = `
       <div class="card">
@@ -298,7 +342,7 @@ export const CalendarView = {
                   <div>
                     <span style="font-weight:700; color:var(--primary); font-size:14px; margin-right:12px;">${escapeHtml(ev.time)}</span>
                     <strong style="color:var(--text-main); font-size:14px;">${escapeHtml(ev.patient_name)}</strong>
-                    <span style="color:var(--text-muted); font-size:12px; margin-left:8px;">(${escapeHtml(ev.doctor)})</span>
+                    <span style="color:var(--text-secondary); font-size:12px; margin-left:8px; font-weight:500;">👨‍⚕️ ${escapeHtml(ev.doctor || 'Unassigned')}</span>
                   </div>
                   <div style="display:flex; align-items:center; gap:10px;">
                     ${renderBadge(ev.status)}

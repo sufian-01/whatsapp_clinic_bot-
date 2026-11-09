@@ -169,6 +169,16 @@ export const Modal = {
   },
 };
 
+// Ensure Modal is globally accessible for inline onclick handlers across all templates
+if (typeof window !== "undefined") {
+  window.Modal = Modal;
+  document.addEventListener("click", (e) => {
+    if (e.target && e.target.closest && e.target.closest("[data-dismiss='modal'], [data-modal-close]")) {
+      Modal.close();
+    }
+  });
+}
+
 export function renderTableSkeletons(cols = 6, rows = 5) {
   let out = "";
   for (let r = 0; r < rows; r++) {

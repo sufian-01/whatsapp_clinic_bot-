@@ -572,11 +572,15 @@ export const PatientsView = {
     `;
 
     const footerHtml = `
-      <button type="button" class="btn btn-secondary" onclick="window.Modal.close()">Cancel</button>
+      <button type="button" id="cancel-edit-patient-btn" class="btn btn-secondary" data-dismiss="modal" onclick="window.Modal.close()">Cancel</button>
       <button type="button" id="save-edit-patient-btn" class="btn btn-primary">Save Changes</button>
     `;
 
     Modal.open(`Edit Patient: ${escapeHtml(patient.patient_id)}`, bodyHtml, footerHtml);
+
+    document.getElementById("cancel-edit-patient-btn")?.addEventListener("click", () => {
+      Modal.close();
+    });
 
     document.getElementById("save-edit-patient-btn")?.addEventListener("click", async () => {
       const updates = {
@@ -648,11 +652,15 @@ export const PatientsView = {
     `;
 
     const footerHtml = `
-      <button type="button" class="btn btn-secondary" onclick="window.Modal.close()">Cancel</button>
+      <button type="button" id="cancel-add-patient-btn" class="btn btn-secondary" data-dismiss="modal" onclick="window.Modal.close()">Cancel</button>
       <button type="button" id="submit-add-patient-btn" class="btn btn-primary">Create Patient</button>
     `;
 
     Modal.open("Register New Patient", bodyHtml, footerHtml);
+
+    document.getElementById("cancel-add-patient-btn")?.addEventListener("click", () => {
+      Modal.close();
+    });
 
     // Live duplicate check on phone input blur
     const phoneInput = document.getElementById("add-p-phone");

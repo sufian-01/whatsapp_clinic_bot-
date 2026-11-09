@@ -1211,14 +1211,26 @@ class CrmService:
         records = self.patients.list_patients() if self.patients else []
         events = []
         doc_q = doctor_filter.casefold().strip()
+        doc_q_clean = re.sub(r"^dr\.?\s*", "", doc_q)
+        doc_q_clean = re.sub(r"[^\w\s]", "", doc_q_clean).strip()
 
         for r in records:
             d = r.get("Appointment Date", "").strip()
             if not d or d < start_date or d > end_date:
                 continue
             doc = r.get("Doctor", "").strip()
-            if doc_q and doc_q not in doc.casefold():
-                continue
+            if doc_q:
+                doc_lower = doc.casefold()
+                doc_clean = re.sub(r"^dr\.?\s*", "", doc_lower)
+                doc_clean = re.sub(r"[^\w\s]", "", doc_clean).strip()
+                matches = (
+                    doc_q in doc_lower
+                    or doc_lower in doc_q
+                    or (bool(doc_q_clean) and doc_q_clean in doc_clean)
+                    or (bool(doc_clean) and doc_clean in doc_q_clean)
+                )
+                if not matches:
+                    continue
 
             events.append({
                 "id": r.get("Token No") or r.get("Patient ID", ""),

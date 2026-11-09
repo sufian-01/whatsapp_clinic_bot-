@@ -160,16 +160,16 @@ export const API = {
   },
 
   // Dashboard
-  async getDashboardStats(today) {
-    return request("/dashboard/stats", { params: { today } });
+  async getDashboardStats(today, options = {}) {
+    return request("/dashboard/stats", { params: { today }, ...options });
   },
 
-  async getTodayAppointments(today) {
-    return request("/dashboard/today-appointments", { params: { today } });
+  async getTodayAppointments(today, options = {}) {
+    return request("/dashboard/today-appointments", { params: { today }, ...options });
   },
 
-  async getRecentPatients(limit = 5) {
-    return request("/dashboard/recent-patients", { params: { limit } });
+  async getRecentPatients(limit = 5, options = {}) {
+    return request("/dashboard/recent-patients", { params: { limit }, ...options });
   },
 
   // Patients

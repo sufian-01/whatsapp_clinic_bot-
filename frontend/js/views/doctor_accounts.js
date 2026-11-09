@@ -14,6 +14,62 @@ export const DoctorAccountsView = {
     await this.render();
   },
 
+  getCardHtml() {
+    return `
+      <div class="card" id="settings-doctor-accounts-card">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+          <div>
+            <span class="card-title">🔐 Doctor Portal Accounts & Credentials</span>
+            <div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;">
+              Manage physician login accounts, access permissions, and reset passwords
+            </div>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <button id="admin-create-doc-acc-btn" class="btn btn-primary btn-sm">
+              <span>➕</span> Create Doctor Account
+            </button>
+            <button id="admin-doc-acc-refresh-btn" class="btn btn-secondary btn-sm" title="Refresh accounts">
+              <span>🔄</span> Refresh
+            </button>
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Doctor ID</th>
+                <th>Physician Name</th>
+                <th>Specialization</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Password Reset Req</th>
+                <th>Last Login</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="admin-doc-acc-tbody">
+              ${renderTableSkeletons(9, 4)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  },
+
+  bindCardEvents() {
+    document.getElementById("admin-doc-acc-refresh-btn")?.addEventListener("click", () => this.loadData());
+    document.getElementById("admin-create-doc-acc-btn")?.addEventListener("click", () => this.openCreateAccountModal());
+  },
+
+  async mountIn(container) {
+    this.container = container;
+    if (!this.container) return;
+    this.container.innerHTML = this.getCardHtml();
+    this.bindCardEvents();
+    await this.loadData();
+  },
+
   async render() {
     this.container.innerHTML = `
       <div class="view-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom: 24px;">
@@ -56,9 +112,7 @@ export const DoctorAccountsView = {
       </div>
     `;
 
-    document.getElementById("admin-doc-acc-refresh-btn")?.addEventListener("click", () => this.loadData());
-    document.getElementById("admin-create-doc-acc-btn")?.addEventListener("click", () => this.openCreateAccountModal());
-
+    this.bindCardEvents();
     await this.loadData();
   },
 

@@ -52,7 +52,10 @@ export const DoctorsView = {
             <input type="text" id="doctors-search-input" class="form-input search-input" placeholder="Search by doctor name or specialty..." />
           </div>
         </div>
-        <div class="filter-right">
+        <div class="filter-right" style="display:flex; gap:10px; align-items:center;">
+          <a href="#settings" class="btn btn-secondary" id="manage-doc-accounts-btn" title="Manage Doctor Accounts in Settings">
+            <span>🔐</span> Doctor Accounts
+          </a>
           <button id="add-doctor-btn" class="btn btn-primary">
             <span>+</span> Add Doctor
           </button>

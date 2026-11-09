@@ -335,13 +335,19 @@ class GraphNodes:
         return "\n".join(lines)
 
     def _show_doctor_availability(self, state: GraphState, doctor: dict, requested_date: str | None = None) -> GraphState:
+        def _safe_date_label(d_str: str) -> str:
+            try:
+                return date.fromisoformat(d_str).strftime("%d %B")
+            except Exception:
+                return str(d_str)
+
         all_slots = self._upcoming_slots(doctor)
         details = self._doctor_details(doctor)
         name = doctor.get("Doctor Name", "this doctor")
         if requested_date:
             requested_slots = [slot for slot in all_slots if slot.get("Date") == requested_date]
             if requested_slots:
-                label = date.fromisoformat(requested_date).strftime("%d %B")
+                label = _safe_date_label(requested_date)
                 times = ", ".join(self._format_time(slot.get("Start Time", "")) for slot in requested_slots)
                 is_booking = bool(state.get("appointment_step"))
                 extra_step = {"ui": "slots", "appointment_step": "pre_patient_slot"} if is_booking else {}
@@ -358,7 +364,7 @@ class GraphNodes:
                 return {
                     **state,
                     **details,
-                    "response": f"{name} has no available slots on {date.fromisoformat(requested_date).strftime('%d %B')}. Nearest upcoming availability:\n{self._format_availability(nearest)}\n\nWhich date would you prefer?",
+                    "response": f"{name} has no available slots on {_safe_date_label(requested_date)}. Nearest upcoming availability:\n{self._format_availability(nearest)}\n\nWhich date would you prefer?",
                 }
             return {**state, **details, "response": f"{name} has no available slots on that date or in the upcoming schedule. I can check another doctor or date."}
         if not all_slots:

@@ -6,6 +6,7 @@ import { API } from "../api.js";
 import { Auth } from "../auth.js";
 import { escapeHtml, showToast } from "../utils.js";
 import { ThemeManager } from "../theme.js";
+import { DoctorAccountsView } from "./doctor_accounts.js";
 
 export const SettingsView = {
   container: null,
@@ -449,6 +450,9 @@ export const SettingsView = {
           </div>
         </div>
 
+        <!-- Doctor Portal Accounts Management -->
+        <div id="settings-doctor-accounts-section"></div>
+
         <!-- Clinic Branding & Hospital Logo -->
         <div class="card">
           <div class="card-header">
@@ -585,6 +589,12 @@ export const SettingsView = {
     `;
 
     this.bindCommonEvents();
+
+    // Mount Doctor Accounts management section directly in Settings
+    const docAccContainer = document.getElementById("settings-doctor-accounts-section");
+    if (docAccContainer) {
+      await DoctorAccountsView.mountIn(docAccContainer);
+    }
 
     // Logo file reader handler
     const logoFileInput = document.getElementById("clinic-logo-file");
