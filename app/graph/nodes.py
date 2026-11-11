@@ -919,9 +919,20 @@ class GraphNodes:
         if step == "name":
             cleaned = text.strip()
             lowered = cleaned.casefold()
+
+            from .router import _is_draft_cancel_or_rejection
+            if _is_draft_cancel_or_rejection(cleaned):
+                return self.appointment_draft_cancel(state)
+
             is_question = "?" in cleaned or any(w in lowered.split() for w in ("kya", "kyu", "kyun", "why", "who", "which", "kaise", "what", "kab", "kitne", "batao", "btao"))
             is_greeting = lowered in {"hi", "hello", "hey", "hii", "namaste"}
             is_booking_phrase = any(w in lowered for w in ("book", "appointment", "appoinment", "doctor", "dr", "chahiye", "karo", "chuka"))
+
+            # Refusal words that MUST NOT be accepted as a person's name
+            is_refusal = any(w in lowered.split() for w in ("nahi", "nhi", "ni", "dont", "don't", "want", "krna", "karna", "karwana", "cancel", "stop", "leave", "exit", "quit"))
+            if is_refusal:
+                return self.appointment_draft_cancel(state)
+
             if is_question:
                 resume_ctx = {
                     "flow": "appointment_booking",
@@ -934,10 +945,24 @@ class GraphNodes:
                     "resume_context": resume_ctx,
                     "active_flow": "appointment_booking",
                 })
-            if is_greeting or is_booking_phrase or len(cleaned) < 2:
+
+            import re
+            name_clean = re.sub(r"[\.\s\-']", "", cleaned)
+            is_valid_name = bool(name_clean and name_clean.isalpha() and 2 <= len(cleaned) <= 50 and not is_booking_phrase and not is_greeting)
+
+            if not is_valid_name:
                 if _is_hindi_or_hinglish(cleaned):
-                    return {**state, "ui": "", "response": "Kripya patient ka poora naam share karein (jaise 'Rahul Sharma') jinke liye appointment book karni hai."}
-                return {**state, "ui": "", "response": "Please provide the patient's full name to continue with the appointment."}
+                    return {
+                        **state,
+                        "ui": "",
+                        "response": "Kripya patient ka valid poora naam share karein (jaise 'Rahul Sharma').\n\n*(Booking cancel karne ke liye 'cancel' likhein.)*",
+                    }
+                return {
+                    **state,
+                    "ui": "",
+                    "response": "Please provide the patient's valid full name (e.g. 'Rahul Sharma') to continue.\n\n*(Type 'cancel' to cancel booking.)*",
+                }
+
             draft = {"tenant_id": state.get("tenant_id", "default")} if guard_enabled else dict(state.get("appointment_draft") or {})
             draft["patient_name"] = cleaned
             return {
@@ -1709,6 +1734,17 @@ class GraphNodes:
         support_phone = state.get("support_phone") or self._support_phone
         return {**state, "response": f"Please contact the {clinic_name} team at {support_phone}."}
 
+    @staticmethod
+    def _clean_doctor_display_name(doc_name: str) -> str:
+        if not doc_name:
+            return ""
+        name = doc_name.strip()
+        if name.lower().startswith("dr."):
+            return name
+        elif name.lower().startswith("dr "):
+            return f"Dr. {name[3:].strip()}"
+        return f"Dr. {name}"
+
     def _build_booking_continuation_reminder(self, state: GraphState) -> str:
         active_step = state.get("appointment_step")
         if not active_step or active_step == "complete":
@@ -1717,7 +1753,7 @@ class GraphNodes:
         pending_target = (resume_ctx.get("pending_field") if resume_ctx else None) or active_step
         doc_name = state.get("doctor_name", "").strip()
         if doc_name:
-            clean_name = doc_name if doc_name.lower().startswith("dr") else f"Dr. {doc_name}"
+            clean_name = self._clean_doctor_display_name(doc_name)
             doc_hint = f" with {clean_name}"
         else:
             doc_hint = ""
@@ -1743,8 +1779,8 @@ class GraphNodes:
             step_prompt_en = "Please provide your email address, or type 'skip'."
 
         if _is_hindi_or_hinglish(state.get("user_text", "")):
-            return f"\n\n*(Aapka appointment booking{doc_hint} chalu hai. {step_prompt_hi})*"
-        return f"\n\n*(Your appointment booking{doc_hint} is still active. {step_prompt_en})*"
+            return f"\n\n*(Aapka appointment booking{doc_hint} chalu hai. Kya aap continue karna chahte hain? {step_prompt_hi} Ya cancel karne ke liye 'cancel' likhein.)*"
+        return f"\n\n*(Your appointment booking{doc_hint} is still active. Would you like to continue? {step_prompt_en} Or reply 'cancel' to cancel booking.)*"
 
     def answer(self, state: GraphState) -> GraphState:
         logger.info(">>> [AGENT NODE TRIGGERED] 'answer' (LLM/Gemini) | user_text=%r", state.get("user_text", ""))
@@ -1807,38 +1843,8 @@ class GraphNodes:
         logger.info("Gemini response generated")
 
         # If user asked a side question mid-booking, add continuation reminder
-        active_step = state.get("appointment_step")
-        resume_ctx = state.get("resume_context")
-        pending_target = (resume_ctx.get("pending_field") if resume_ctx else None) or active_step
-
-        if active_step and active_step != "complete":
-            doc_name = state.get("doctor_name", "")
-            doc_hint = f" with Dr. {doc_name}" if doc_name else ""
-            step_prompt_hi = "Kripya apna agla detail batayein."
-            step_prompt_en = "Please continue whenever you are ready."
-            if pending_target == "doctor":
-                step_prompt_hi = "Aap kis doctor ke sath appointment book karna chahte hain?"
-                step_prompt_en = "Which doctor would you like to consult?"
-            elif pending_target == "phone":
-                step_prompt_hi = "Kripya apna 10-digit mobile number share karein."
-                step_prompt_en = "Please share your 10-digit mobile number."
-            elif pending_target == "name":
-                step_prompt_hi = "Kripya patient ka poora naam share karein."
-                step_prompt_en = "Please share the patient's full name."
-            elif pending_target in {"date", "pre_patient_date"}:
-                step_prompt_hi = "Kripya apni preferred date batayein."
-                step_prompt_en = "Please provide your preferred appointment date."
-            elif pending_target in {"slot", "pre_patient_slot"}:
-                step_prompt_hi = "Kripya apna preferred time slot select karein."
-                step_prompt_en = "Please select your preferred time slot."
-            elif pending_target == "email":
-                step_prompt_hi = "Kripya confirmation ke liye apna email address share karein (ya 'skip' likhein)."
-                step_prompt_en = "Please provide your email address, or type 'skip'."
-
-            if _is_hindi_or_hinglish(state.get("user_text", "")):
-                reminder = f"\n\n*(Aapka appointment booking{doc_hint} chalu hai. {step_prompt_hi})*"
-            else:
-                reminder = f"\n\n*(Your appointment booking{doc_hint} is still active. {step_prompt_en})*"
+        reminder = self._build_booking_continuation_reminder(state)
+        if reminder:
             response = response + reminder
 
         # If intent is greeting, attach welcome_menu for interactive quick buttons (1st time only)

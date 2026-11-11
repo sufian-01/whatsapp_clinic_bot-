@@ -29,25 +29,48 @@ def _is_draft_cancel_or_rejection(text: str) -> bool:
     if _is_cancel_query(lowered):
         return True
 
-    # Negative rejections of booking flow: e.g. "appoinment ki batt ni kr rha mei", "nahi chahiye", "rehne do"
+    # Negative rejections of booking flow in English and Hinglish
     rejection_phrases = (
-        "rehne do", "rehne de", "nahi chahiye", "nahi karna", "nahi karni", "mat karo", "chhod do", "chhor do",
+        # English negative booking phrases
+        "i don't want booking", "dont want booking", "i do not want booking",
+        "i don't want", "dont want", "do not want", "don't want",
+        "i don't need", "dont need", "do not need",
+        "no booking", "not booking", "skip booking", "cancel booking", "stop booking",
+        "not interested", "don't book", "dont book", "leave it", "drop it",
+        "no thanks", "no thank you",
+
+        # Hinglish negative booking phrases
+        "rehne do", "rehne de", "nahi chahiye", "nhi chahiye", "ni chahiye", "mujhe nahi chahiye", "mujhe ni chahiye",
+        "nahi karna", "nhi karna", "ni karna", "nahi karni", "nhi karni", "ni karni",
+        "mujhe ni krna", "mujhe nahi krna", "mujhe nhi krna", "ni krna", "nhi krna", "nahi krna",
+        "mat karo", "chhod do", "chhor do", "khatam karo", "band karo",
         "baat nahi kar raha", "batt ni kr rha", "baat nahi kar rahe", "baat nahi ho rahi", "baat nhi",
         "nahi mang raha", "nahi maang raha", "nahi bola", "nahi bol raha", "ni kr rha", "nahi kar raha",
         "appointment nahi", "appoinment nahi", "no appointment", "nahi chahiye appointment",
-        "nahi karwana", "nahi book karna", "nahi book karni", "khatam karo", "band karo",
+        "nahi karwana", "nhi karwana", "ni karwana",
+        "nahi book karna", "nahi book karni", "nhi book karna", "ni book karna",
+        "nahi lena", "nahi leni", "nhi lena", "nhi leni", "ni lena", "ni leni",
+        "radd karo", "radd kar do", "kuch nahi", "kuch nhi",
+
+        # Single word commands
         "stop", "exit", "quit", "abort", "cancel kar", "cancel karo", "cancel kardo", "cancel kr do",
         "cancel karna", "cancel karni", "cancel appointment", "cancel appoinment", "cancel my appointment",
-        "nahi lena", "nahi leni", "radd karo", "radd kar do",
     )
     if any(p in lowered for p in rejection_phrases):
         return True
 
-    if re.search(r"\b(appoinment|appointment|booking)\b.*\b(baat|batt|nahi|nhi|mat|rehne|cancel|ni)\b", lowered):
+    # Pattern: negation + intent/action (e.g. "don't want", "mujhe ni", "nhi krna")
+    if re.search(r"\b(don'?t|do not|not|no|nahi|nhi|ni)\s+(want|need|chahiye|lena|krna|karna|karwana)\b", lowered):
         return True
-    if re.search(r"\b(baat|batt|nahi|nhi|mat|rehne|cancel)\b.*\b(appoinment|appointment|booking)\b", lowered):
+    if re.search(r"\b(nahi|nhi|ni|mat|dont|don'?t)\s+(krna|karna|karni|karo|chahiye|lena|leni|book)\b", lowered):
         return True
-    if lowered in {"cancel", "nahi", "no", "stop", "exit", "quit", "nhi"}:
+    if re.search(r"\b(mujhe|hume|humko|mujhko)\s+(ni|nahi|nhi)\s+(krna|karna|chahiye|lena|booking)\b", lowered):
+        return True
+    if re.search(r"\b(appoinment|appointment|booking)\b.*\b(baat|batt|nahi|nhi|mat|rehne|cancel|ni|not|stop|leave|drop)\b", lowered):
+        return True
+    if re.search(r"\b(baat|batt|nahi|nhi|mat|rehne|cancel|not|stop|leave|drop)\b.*\b(appoinment|appointment|booking)\b", lowered):
+        return True
+    if lowered in {"cancel", "nahi", "no", "stop", "exit", "quit", "nhi", "ni"}:
         return True
     return False
 

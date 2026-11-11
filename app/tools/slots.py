@@ -82,8 +82,21 @@ class SlotRepository:
         return records
 
     def get_available_slots(self, doctor: str, date: str) -> list[dict[str, str]]:
+        import re
         _, records = self._snapshot()
-        return [record for record in records if record.get("Doctor Name", "").casefold() == doctor.casefold() and record.get("Date") == date and record.get("Status", "").casefold() == "available"]
+        clean_doc = re.sub(r"^(dr\.?|doctor)\s*", "", doctor.strip(), flags=re.I).strip().casefold()
+        def _matches(rec_doc: str) -> bool:
+            if rec_doc.casefold() == doctor.casefold():
+                return True
+            rec_clean = re.sub(r"^(dr\.?|doctor)\s*", "", rec_doc.strip(), flags=re.I).strip().casefold()
+            return bool(clean_doc and (clean_doc in rec_clean or rec_clean in clean_doc))
+
+        return [
+            record for record in records
+            if (_matches(record.get("Doctor Name", "")) or record.get("Doctor ID", "").casefold() == doctor.casefold())
+            and record.get("Date") == date
+            and record.get("Status", "").casefold() == "available"
+        ]
 
     def get_upcoming_available_slots(
         self,
@@ -92,6 +105,7 @@ class SlotRepository:
         from_date: str | None = None,
     ) -> list[dict[str, str]]:
         """Return unique, well-formed, unbooked slots on or after ``from_date``."""
+        import re
         _, records = self._snapshot()
         try:
             minimum = date.fromisoformat(from_date) if from_date else date.today()
@@ -99,14 +113,19 @@ class SlotRepository:
             return []
         result: list[dict[str, str]] = []
         seen_slot_ids: set[str] = set()
+        clean_target = re.sub(r"^(dr\.?|doctor)\s*", "", doctor_name.strip(), flags=re.I).strip().casefold() if doctor_name else ""
+
         for record in records:
             if record.get("Status", "").casefold() != "available":
                 continue
             if doctor_id:
                 if record.get("Doctor ID", "") != doctor_id:
                     continue
-            elif doctor_name and record.get("Doctor Name", "").casefold() != doctor_name.casefold():
-                continue
+            elif clean_target:
+                rec_name = record.get("Doctor Name", "")
+                rec_clean = re.sub(r"^(dr\.?|doctor)\s*", "", rec_name.strip(), flags=re.I).strip().casefold()
+                if rec_name.casefold() != doctor_name.casefold() and clean_target not in rec_clean and rec_clean not in clean_target:
+                    continue
             try:
                 slot_date = date.fromisoformat(record.get("Date", ""))
             except ValueError:
@@ -123,8 +142,21 @@ class SlotRepository:
         return next((record for record in records if record.get("Slot ID") == slot_id), None)
 
     def get_booked_slots(self, doctor: str, date: str) -> list[dict[str, str]]:
+        import re
         _, records = self._snapshot()
-        return [record for record in records if record.get("Doctor Name", "").casefold() == doctor.casefold() and record.get("Date") == date and record.get("Status", "").casefold() == "booked"]
+        clean_doc = re.sub(r"^(dr\.?|doctor)\s*", "", doctor.strip(), flags=re.I).strip().casefold()
+        def _matches(rec_doc: str) -> bool:
+            if rec_doc.casefold() == doctor.casefold():
+                return True
+            rec_clean = re.sub(r"^(dr\.?|doctor)\s*", "", rec_doc.strip(), flags=re.I).strip().casefold()
+            return bool(clean_doc and (clean_doc in rec_clean or rec_clean in clean_doc))
+
+        return [
+            record for record in records
+            if (_matches(record.get("Doctor Name", "")) or record.get("Doctor ID", "").casefold() == doctor.casefold())
+            and record.get("Date") == date
+            and record.get("Status", "").casefold() == "booked"
+        ]
 
     def book_slot(self, slot_id: str, patient_id: str, token_no: str) -> bool:
         with self._booking_lock:

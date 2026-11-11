@@ -6,7 +6,14 @@ Generates 5 distinct slots per doctor per day across 33 upcoming days
 
 from datetime import date, datetime, timedelta, timezone
 import logging
+import os
+from pathlib import Path
+import sys
+from typing import Optional
 from uuid import uuid4
+
+# Ensure project root is on sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from sqlalchemy import select, update
 
@@ -86,9 +93,11 @@ DEFAULT_TIMINGS = [
 
 def seed_slots(
     tenant_id: str = "default",
-    start_date: date = date(2026, 10, 29),
-    num_days: int = 33,
+    start_date: Optional[date] = None,
+    num_days: int = 45,
 ) -> dict:
+    if start_date is None:
+        start_date = date.today()
     dates = [start_date + timedelta(days=i) for i in range(num_days)]
 
     factory = get_session_factory()

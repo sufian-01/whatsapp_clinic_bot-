@@ -1002,6 +1002,14 @@ class PostgresSlotRepository:
         """Return available slots for a given doctor and date."""
         tenant_id = _resolve_tenant_id()
         with self.session_factory() as session:
+            clean_doc = re.sub(r"^(dr\.?|doctor)\s*", "", doctor.strip(), flags=re.I).strip()
+            conditions = [
+                Doctor.name.ilike(f"%{doctor.strip()}%"),
+                Doctor.doctor_id == doctor.strip(),
+            ]
+            if clean_doc:
+                conditions.append(Doctor.name.ilike(f"%{clean_doc}%"))
+
             stmt = (
                 select(AppointmentSlot, Doctor)
                 .join(Doctor, AppointmentSlot.doctor_id == Doctor.id)
@@ -1009,10 +1017,7 @@ class PostgresSlotRepository:
                     AppointmentSlot.tenant_id == tenant_id,
                     AppointmentSlot.date == date.strip(),
                     AppointmentSlot.status.ilike("available"),
-                    or_(
-                        Doctor.name.ilike(f"%{doctor.strip()}%"),
-                        Doctor.doctor_id == doctor.strip(),
-                    ),
+                    or_(*conditions),
                 )
                 .order_by(AppointmentSlot.start_time)
             )
@@ -1041,7 +1046,11 @@ class PostgresSlotRepository:
             if doctor_id:
                 stmt = stmt.where(Doctor.doctor_id == doctor_id.strip())
             elif doctor_name:
-                stmt = stmt.where(Doctor.name.ilike(f"%{doctor_name.strip()}%"))
+                clean_doc = re.sub(r"^(dr\.?|doctor)\s*", "", doctor_name.strip(), flags=re.I).strip()
+                conditions = [Doctor.name.ilike(f"%{doctor_name.strip()}%")]
+                if clean_doc:
+                    conditions.append(Doctor.name.ilike(f"%{clean_doc}%"))
+                stmt = stmt.where(or_(*conditions))
 
             stmt = stmt.order_by(AppointmentSlot.date, AppointmentSlot.start_time)
             rows = session.execute(stmt).all()
@@ -1071,6 +1080,14 @@ class PostgresSlotRepository:
         """Fetch booked slots for a doctor and date."""
         tenant_id = _resolve_tenant_id()
         with self.session_factory() as session:
+            clean_doc = re.sub(r"^(dr\.?|doctor)\s*", "", doctor.strip(), flags=re.I).strip()
+            conditions = [
+                Doctor.name.ilike(f"%{doctor.strip()}%"),
+                Doctor.doctor_id == doctor.strip(),
+            ]
+            if clean_doc:
+                conditions.append(Doctor.name.ilike(f"%{clean_doc}%"))
+
             stmt = (
                 select(AppointmentSlot, Doctor)
                 .join(Doctor, AppointmentSlot.doctor_id == Doctor.id)
@@ -1078,7 +1095,7 @@ class PostgresSlotRepository:
                     AppointmentSlot.tenant_id == tenant_id,
                     AppointmentSlot.date == date.strip(),
                     AppointmentSlot.status.ilike("booked"),
-                    or_(Doctor.name.ilike(doctor.strip()), Doctor.doctor_id == doctor.strip()),
+                    or_(*conditions),
                 )
             )
             rows = session.execute(stmt).all()

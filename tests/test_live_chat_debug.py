@@ -153,5 +153,38 @@ class LiveChatIssuesTests(unittest.TestCase):
         self.assertNotIn("Dr. Dr.", reminder)
         self.assertIn("Dr. sufian", reminder)
 
+    def test_issue8_dont_want_booking_cancels_draft(self):
+        """Image 4: User says 'i don't want booking' during name step -> MUST cancel draft."""
+        self._send("Book Appointment", phone="919999900021")
+        # Bot asks for name
+        r = self._send("i don't want booking", phone="919999900021")
+        resp = r.get("response", "").lower()
+        self.assertIn("cancel", resp)
+        self.assertNotIn("what email", resp)
+        self.assertNotEqual(r.get("appointment_step"), "name")
+        self.assertNotEqual(r.get("appointment_step"), "email")
+
+    def test_issue9_mujhe_ni_krna_cancels_draft(self):
+        """Image 4: User says 'mujhe ni krna' during name step -> MUST cancel draft and NOT save as patient name."""
+        self._send("Book Appointment", phone="919999900022")
+        r = self._send("mujhe ni krna", phone="919999900022")
+        resp = r.get("response", "").lower()
+        self.assertIn("cancel", resp)
+        self.assertNotIn("what email", resp)
+        self.assertNotEqual(r.get("patient_name"), "mujhe ni krna")
+        self.assertNotEqual(r.get("appointment_step"), "name")
+        self.assertNotEqual(r.get("appointment_step"), "email")
+
+    def test_issue10_dr_sufian_slot_lookup_without_dot(self):
+        """Image 5: Asking slots for 'dr sufian' (without dot) must find doctor with name 'Dr. sufian'."""
+        self.slots.get_upcoming_available_slots.return_value = [
+            {"Slot ID": "SLT01", "Doctor ID": "DOC003", "Doctor Name": "Dr. sufian", "Date": "2026-11-12", "Start Time": "03:00 PM"}
+        ]
+        self._send("Book Appointment", phone="919999900023")
+        r = self._send("dr sufian", phone="919999900023")
+        resp = r.get("response", "")
+        self.assertIn("Dr. sufian", resp)
+        self.assertNotIn("has no upcoming available slots", resp)
+
 if __name__ == "__main__":
     unittest.main()
