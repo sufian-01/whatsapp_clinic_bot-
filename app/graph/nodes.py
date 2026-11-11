@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -31,7 +32,6 @@ _MAX_BUTTON_DOCTORS = 8
 
 
 def _is_hindi_or_hinglish(text: str) -> bool:
-    import re
     lowered = text.casefold()
     hindi_tokens = (
         "kab", "hain", "hai", "karo", "karna", "karni", "kar do", "chahiye", "batao",
@@ -946,7 +946,6 @@ class GraphNodes:
                     "active_flow": "appointment_booking",
                 })
 
-            import re
             name_clean = re.sub(r"[\.\s\-']", "", cleaned)
             is_valid_name = bool(name_clean and name_clean.isalpha() and 2 <= len(cleaned) <= 50 and not is_booking_phrase and not is_greeting)
 
